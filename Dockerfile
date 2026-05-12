@@ -24,7 +24,6 @@ ENV TZ=Asia/Almaty
 
 # Копируем собранный файл из первого шага
 COPY --from=builder /app/audit_bot .
-COPY --from=builder /app/.env . 
 
 # Запускаем бота
 CMD ["./audit_bot"]
