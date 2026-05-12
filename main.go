@@ -14,6 +14,7 @@ import (
 	// Используем полное имя модуля из твоего go.mod
 	"github.com/almassuleimenov/Audit_bot/bot"
 	"github.com/almassuleimenov/Audit_bot/repository"
+	"net/http"
 )
 
 func main() {
@@ -65,6 +66,20 @@ func main() {
 	repo := repository.NewBotRepository(db)
 	handler := bot.NewBotHandler(botAPI, repo)
 
+	go func() {
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080" // Дефолтный порт
+		}
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Bot is alive and running!"))
+		})
+		log.Printf("[INFO] Starting healthcheck server on port %s", port)
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Printf("[ERROR] HTTP server failed: %v", err)
+		}
+	}()
 	// Запускаем асинхронный FSM движок
 	handler.Start()
 }
