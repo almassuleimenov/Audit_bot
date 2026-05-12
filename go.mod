@@ -1,4 +1,4 @@
-module github.com/yourusername/audit_bot
+module github.com/almassuleimenov/Audit_bot
 
 go 1.25.4
 

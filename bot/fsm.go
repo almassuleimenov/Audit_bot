@@ -10,7 +10,7 @@ import (
 	"time"
 
 	// Используем полное имя модуля из твоего go.mod
-	"github.com/yourusername/audit_bot/repository"
+	"github.com/almassuleimenov/Audit_bot/repository"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )

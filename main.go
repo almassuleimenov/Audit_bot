@@ -12,8 +12,8 @@ import (
 	"github.com/joho/godotenv"
 
 	// Используем полное имя модуля из твоего go.mod
-	"github.com/yourusername/audit_bot/bot"
-	"github.com/yourusername/audit_bot/repository"
+	"github.com/almassuleimenov/Audit_bot/bot"
+	"github.com/almassuleimenov/Audit_bot/repository"
 )
 
 func main() {
