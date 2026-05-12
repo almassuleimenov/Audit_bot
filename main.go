@@ -40,8 +40,12 @@ func main() {
 	log.Printf("[INFO] Authorized on account %s", botAPI.Self.UserName)
 
 	// Инициализируем подключение к PostgreSQL
-	// Настрой user, password и dbname под свою локальную БД
-	dsn := "host=localhost user=postgres password=postgres dbname=audit_bot port=5432 sslmode=disable TimeZone=Asia/Almaty"
+	// На Render DSN базы данных будет лежать в переменной DATABASE_URL
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		// Fallback для локального тестирования
+		dsn = "host=localhost user=postgres password=postgres dbname=audit_bot port=5432 sslmode=disable TimeZone=Asia/Almaty"
+	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to connect to PostgreSQL: %v", err)
