@@ -1,32 +1,31 @@
 package main
 
+// D:\Project\backend_projects\audit_bot\main.go
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	// 1. Подключаем новую библиотеку для работы с файлом .env
 	"github.com/joho/godotenv"
 
 	// Используем полное имя модуля из твоего go.mod
 	"github.com/almassuleimenov/Audit_bot/bot"
 	"github.com/almassuleimenov/Audit_bot/repository"
-	"net/http"
 )
 
 func main() {
-	// 2. Вызываем функцию Load(). Она автоматически найдет файл .env в папке
-	// и загрузит из него TELEGRAM_TOKEN в системные переменные программы.
+	// Загружаем .env файл
 	err := godotenv.Load()
 	if err != nil {
-		// Если файла нет, программа не упадет, а просто выведет предупреждение.
 		log.Println("[WARNING] Файл .env не найден. Убедись, что он лежит рядом с main.go")
 	}
 
-	// 3. Загружаем токен. Теперь программа найдет его без проблем!
+	// Инициализируем токен
 	token := os.Getenv("TELEGRAM_TOKEN")
 	if token == "" {
 		log.Fatal("[ERROR] TELEGRAM_TOKEN not set in environment")
@@ -41,10 +40,8 @@ func main() {
 	log.Printf("[INFO] Authorized on account %s", botAPI.Self.UserName)
 
 	// Инициализируем подключение к PostgreSQL
-	// На Render DSN базы данных будет лежать в переменной DATABASE_URL
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// Fallback для локального тестирования
 		dsn = "host=localhost user=postgres password=postgres dbname=audit_bot port=5432 sslmode=disable TimeZone=Asia/Almaty"
 	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
@@ -54,7 +51,7 @@ func main() {
 
 	log.Println("[INFO] Connected to database")
 
-	// Создаем таблицы, если их нет
+	// Создаем таблицы
 	err = db.AutoMigrate(&repository.AuditRecord{}, &repository.Appointment{})
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to migrate database: %v", err)
@@ -66,20 +63,67 @@ func main() {
 	repo := repository.NewBotRepository(db)
 	handler := bot.NewBotHandler(botAPI, repo)
 
+	// 1. Создаем функцию для обработки CORS
+	corsMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			// Разрешаем запросы с любых доменов
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+			// Если это предварительный запрос OPTIONS от браузера - отвечаем 200 OK
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			// Передаем управление дальше к самому обработчику
+			next(w, r)
+		}
+	}
+
+	// 2. Запускаем HTTP сервер в горутине
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" {
-			port = "8080" // Дефолтный порт
+			port = "8080"
 		}
+
+		// Роут для проверки жизнеспособности сервиса (Render health check)
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Bot is alive and running!"))
+			w.Write([]byte("Bot is alive!"))
 		})
-		log.Printf("[INFO] Starting healthcheck server on port %s", port)
+
+		// Эндпоинт для Аудитов (обернут в CORS)
+		http.HandleFunc("/api/audits", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			var records []repository.AuditRecord
+			// Запрос к БД занимает O(N)
+			if err := db.Order("created_at desc").Find(&records).Error; err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(records)
+		}))
+
+		// Эндпоинт для Заявок (обернут в CORS)
+		http.HandleFunc("/api/appointments", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			var appointments []repository.Appointment
+			if err := db.Order("created_at desc").Find(&appointments).Error; err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(appointments)
+		}))
+
+		log.Printf("[INFO] Starting HTTP server on port %s", port)
 		if err := http.ListenAndServe(":"+port, nil); err != nil {
 			log.Printf("[ERROR] HTTP server failed: %v", err)
 		}
 	}()
-	// Запускаем асинхронный FSM движок
+
+	// 3. Запускаем асинхронный FSM движок (он блокирует основной поток, не давая программе завершиться)
 	handler.Start()
 }
