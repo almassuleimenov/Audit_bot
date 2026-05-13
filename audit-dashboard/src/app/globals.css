@@ -1,0 +1,15 @@
+/* src/app/globals.css */
+
+/* Подключаем ядро Tailwind CSS v4 */
+@import "tailwindcss";
+
+/* Явно указываем сборщику искать классы во всех файлах внутри папки src */
+@source "../../src";
+
+/* Добавляем базовые стили (опционально, для подстраховки) */
+@layer base {
+  body {
+    background-color: #f7f9fb;
+    color: #191c1e;
+  }
+}
