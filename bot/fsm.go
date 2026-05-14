@@ -286,7 +286,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 
 	case StateAuditQuestions:
 		if callbackData != "" {
-			// Сохраняем текст ответа на том языке, на котором пользователь нажал кнопку
 			qKey := fmt.Sprintf("q%d", state.QuestionIndex+1)
 			state.Answers[qKey] = callbackData
 			state.QuestionIndex++
@@ -353,7 +352,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 				log.Printf("[ERROR] SaveAppointment: %v", err)
 				h.sendMessage(chatID, t.SaveError)
 			} else {
-				// Уведомление админам отправляем всегда на русском для консистентности системы
 				adminChatID := int64(601610)
 				adminMsg := fmt.Sprintf("🔔 *Новая запись на прием!*\n\n*К кому:* %s\n*ФИО:* %s\n*Вопрос:* %s\n*Телефон:* %s",
 					state.TargetManager, state.FullName, state.Question, state.PhoneNumber)
@@ -378,8 +376,14 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 // --- Вспомогательные методы ---
 
 func (h *BotHandler) sendMessage(chatID int64, text string) {
+	if text == "" {
+		log.Printf("[WARNING] Attempted to send empty message to %d", chatID)
+		return
+	}
 	msg := tgbotapi.NewMessage(chatID, text)
-	h.bot.Send(msg)
+	if _, err := h.bot.Send(msg); err != nil {
+		log.Printf("[ERROR] Failed to send message: %v", err)
+	}
 }
 
 func (h *BotHandler) sendDocument(chatID int64, fileURL string) {
@@ -398,7 +402,9 @@ func (h *BotHandler) sendLanguageSelection(chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("🇰🇿 Қазақша", "lang_kz"),
 		),
 	)
-	h.bot.Send(msg)
+	if _, err := h.bot.Send(msg); err != nil {
+		log.Printf("[ERROR] Failed to send language selection: %v", err)
+	}
 }
 
 // Генерация главного меню
@@ -413,7 +419,9 @@ func (h *BotHandler) sendMenu(chatID int64, lang string) {
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(t.MenuPress, "menu_press")),
 	)
 
-	h.bot.Send(msg)
+	if _, err := h.bot.Send(msg); err != nil {
+		log.Printf("[ERROR] Failed to send menu: %v", err)
+	}
 }
 
 func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserState) {
@@ -426,7 +434,9 @@ func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserStat
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonURL(t.News, "https://www.gov.kz/memleket/entities/kvga/press?lang=ru")),
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonURL(t.Schedule, "https://www.gov.kz/memleket/entities/kvga/about/structure/departments/activity/4728/1?lang=ru")),
 		)
-		h.bot.Send(msg)
+		if _, err := h.bot.Send(msg); err != nil {
+			log.Printf("[ERROR] Failed to send press center: %v", err)
+		}
 		h.sendMenu(chatID, state.Language)
 
 	case "menu_ethics":
@@ -445,7 +455,9 @@ func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserStat
 				tgbotapi.NewInlineKeyboardButtonData(t.BtnDisagree, "audit_disagree"),
 			),
 		)
-		h.bot.Send(msg)
+		if _, err := h.bot.Send(msg); err != nil {
+			log.Printf("[ERROR] Failed to send audit warning: %v", err)
+		}
 
 	case "menu_app":
 		state.Step = StateAppManager
@@ -455,7 +467,9 @@ func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserStat
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(t.Manager2, "manager_musabek")),
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(t.Manager3, "manager_dzhumagulov")),
 		)
-		h.bot.Send(msg)
+		if _, err := h.bot.Send(msg); err != nil {
+			log.Printf("[ERROR] Failed to send manager list: %v", err)
+		}
 	}
 }
 
@@ -474,18 +488,18 @@ func (h *BotHandler) sendAuditQuestion(chatID int64, state *UserState) {
 	t := getText(state.Language)
 	msg := tgbotapi.NewMessage(chatID, t.Questions[state.QuestionIndex])
 
-	// В Payload (CallbackData) мы кладем переведенный текст кнопки.
-	// Это значит, что если выбран KZ, в базу упадет ответ "Иә" или "Жоқ".
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(t.BtnYes, t.BtnYes),
-			tgbotapi.NewInlineKeyboardButtonData(t.BtnNo, "Нет"),
+			tgbotapi.NewInlineKeyboardButtonData(t.BtnNo, t.BtnNo),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(t.BtnDunno, t.BtnDunno),
 		),
 	)
-	h.bot.Send(msg)
+	if _, err := h.bot.Send(msg); err != nil {
+		log.Printf("[ERROR] Failed to send audit question: %v", err)
+	}
 }
 
 func (h *BotHandler) isValidBIN(bin string) bool {
