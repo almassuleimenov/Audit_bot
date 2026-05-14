@@ -1,5 +1,7 @@
 package bot
+
 // D:\Project\backend_projects\audit_bot\bot\fsm.go
+
 import (
 	"context"
 	"fmt"
@@ -9,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	// Используем полное имя модуля из твоего go.mod
 	"github.com/almassuleimenov/Audit_bot/repository"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -17,7 +18,8 @@ import (
 
 // Состояния FSM
 const (
-	StateMenu = iota
+	StateLanguage = iota // НОВЫЙ ШАГ: Выбор языка
+	StateMenu
 	StateAuditWarning
 	StateAuditPosition
 	StateAuditBin
@@ -31,7 +33,8 @@ const (
 
 // UserState хранит текущий контекст диалога пользователя
 type UserState struct {
-	Step          int
+	Step     int
+	Language string // "ru" или "kz"
 	// Данные для Аудита
 	Position      string
 	BIN           string
@@ -44,7 +47,25 @@ type UserState struct {
 	PhoneNumber   string
 }
 
-// Вопросы для аудита
+// Словари для интерфейса (О(1) time complexity)
+var uiTexts = map[string]map[string]string{
+	"ru": {
+		"welcome":     "Вас приветствует Чат-бот Департамента внутреннего государственного аудита. Выберите раздел:",
+		"menu_audit":  "Анкетирование",
+		"menu_app":    "Онлайн-приемная",
+		"menu_ethics": "Уполномоченный по этике",
+		"menu_press":  "Пресс-центр",
+	},
+	"kz": {
+		"welcome":     "Ішкі мемлекеттік аудит департаментінің чат-ботына қош келдіңіз. Бөлімді таңдаңыз:",
+		"menu_audit":  "Сауалнама",
+		"menu_app":    "Онлайн-қабылдау",
+		"menu_ethics": "Әдеп жөніндегі уәкіл",
+		"menu_press":  "Баспасөз орталығы",
+	},
+}
+
+// Вопросы для аудита (пока на русском, позже можно сделать такой же map для kz)
 var auditQuestions = []string{
 	"1. Были ли сотрудники аудита вежливы, корректны и уважительны в общении в процессе проверки?",
 	"2. Возникали ли в процессе проверки ситуации, которые, по вашему мнению, могли носить признаки давления или нарушения этических норм со стороны аудиторов?",
@@ -57,14 +78,12 @@ var auditQuestions = []string{
 	"9. Оказывалось ли к вам или вашим коллегам давление с целью изменить или скрыть какую-либо информацию в ходе аудита?",
 }
 
-// BotHandler содержит инстанс бота, репозиторий и in-memory хранилище состояний
 type BotHandler struct {
 	bot      *tgbotapi.BotAPI
-	repo     repository.BotRepository 
+	repo     repository.BotRepository
 	sessions sync.Map
 }
 
-// NewBotHandler конструктор для BotHandler
 func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository) *BotHandler {
 	return &BotHandler{
 		bot:  bot,
@@ -72,7 +91,6 @@ func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository) *BotHand
 	}
 }
 
-// Start запускает прослушивание обновлений от Telegram
 func (h *BotHandler) Start() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -82,13 +100,11 @@ func (h *BotHandler) Start() {
 	log.Println("[INFO] FSM Engine started")
 
 	for update := range updates {
-		// Запускаем асинхронную обработку каждого обновления
 		go h.processUpdate(update)
 	}
 }
 
 func (h *BotHandler) processUpdate(update tgbotapi.Update) {
-	// Защита от медиафайлов
 	if update.Message != nil && (update.Message.Photo != nil || update.Message.Document != nil || update.Message.Video != nil || update.Message.Audio != nil) {
 		h.sendMessage(update.Message.Chat.ID, "Бот не обрабатывает файлы. Пожалуйста, оставьте контактные данные.")
 		return
@@ -106,15 +122,8 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		callbackData = update.CallbackQuery.Data
 		messageID = update.CallbackQuery.Message.MessageID
 
-		// Обязательно отвечаем на коллбэк, чтобы кнопка не "висела"
 		h.bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 	} else {
-		return // Игнорируем другие типы апдейтов
-	}
-
-	// Команда сброса состояния (возврат в меню)
-	if text == "/start" {
-		h.sendMenu(chatID)
 		return
 	}
 
@@ -124,11 +133,29 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 	if ok {
 		state = val.(UserState)
 	} else {
-		state = UserState{Step: StateMenu, Answers: make(map[string]string)}
+		state = UserState{Step: StateLanguage, Answers: make(map[string]string)}
+	}
+
+	// Команда сброса состояния (перехватываем /start)
+	if text == "/start" {
+		state = UserState{Step: StateLanguage, Answers: make(map[string]string)}
+		h.sendLanguageSelection(chatID)
+		h.sessions.Store(chatID, state)
+		return
 	}
 
 	// Роутер состояний
 	switch state.Step {
+	case StateLanguage:
+		if callbackData == "lang_ru" || callbackData == "lang_kz" {
+			// Сохраняем язык (убираем префикс "lang_")
+			state.Language = callbackData[5:]
+			state.Step = StateMenu
+			h.sendMenu(chatID, state.Language)
+		} else {
+			h.sendLanguageSelection(chatID)
+		}
+
 	case StateMenu:
 		h.handleMenuChoice(chatID, callbackData, &state)
 
@@ -154,7 +181,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 
 	case StateAuditQuestions:
 		if callbackData != "" {
-			// Сохраняем ответ на текущий вопрос
 			qKey := fmt.Sprintf("q%d", state.QuestionIndex+1)
 			state.Answers[qKey] = callbackData
 			state.QuestionIndex++
@@ -174,7 +200,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 			return
 		}
 
-		// Финал ветки Аудит
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -185,8 +210,9 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		} else {
 			h.sendMessage(chatID, "Принято ✅. Ваши ответы сохранены.")
 		}
-		h.sendMenu(chatID)
-		return // Сброс состояния через h.sendMenu
+
+		state.Step = StateMenu
+		h.sendMenu(chatID, state.Language)
 
 	case StateAppManager:
 		if callbackData != "" {
@@ -213,7 +239,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		if text != "" {
 			state.PhoneNumber = text
 
-			// Финал ветки Приемная
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -222,41 +247,34 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 				log.Printf("[ERROR] SaveAppointment: %v", err)
 				h.sendMessage(chatID, "Произошла ошибка при записи. Попробуйте позже.")
 			} else {
-				// --- ОТПРАВКА УВЕДОМЛЕНИЯ АДМИНАМ ---
-				// Примечание: в Telegram ID каналов обычно отрицательные (например, -100123456789)
-				// Если 601610 не сработает, проверь ID канала через бота @ShowJsonBot
-				adminChatID := int64(601610) 
-				adminMsg := fmt.Sprintf("🔔 *Новая запись на прием!*\n\n*К кому:* %s\n*ФИО:* %s\n*Вопрос:* %s\n*Телефон:* %s", 
+				adminChatID := int64(601610)
+				adminMsg := fmt.Sprintf("🔔 *Новая запись на прием!*\n\n*К кому:* %s\n*ФИО:* %s\n*Вопрос:* %s\n*Телефон:* %s",
 					state.TargetManager, state.FullName, state.Question, state.PhoneNumber)
-				
+
 				msg := tgbotapi.NewMessage(adminChatID, adminMsg)
-				msg.ParseMode = "Markdown" // Добавляем поддержку форматирования текста
-				
+				msg.ParseMode = "Markdown"
+
 				if _, err := h.bot.Send(msg); err != nil {
 					log.Printf("[ERROR] Не удалось отправить алерт админам: %v", err)
 				}
-				// ------------------------------------
 
 				h.sendMessage(chatID, "Вы успешно записались на прием! С Вами свяжутся в ближайшее время.")
 			}
-			h.sendMenu(chatID)
-			return
+			state.Step = StateMenu
+			h.sendMenu(chatID, state.Language)
 		}
 	}
 
-	// Сохраняем обновленное состояние обратно в память
 	h.sessions.Store(chatID, state)
 }
 
 // --- Вспомогательные методы ---
 
-// Отправка обычного сообщения
 func (h *BotHandler) sendMessage(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	h.bot.Send(msg)
 }
 
-// Отправка файла по ссылке (PDF)
 func (h *BotHandler) sendDocument(chatID int64, fileURL string) {
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileURL(fileURL))
 	if _, err := h.bot.Send(doc); err != nil {
@@ -264,23 +282,37 @@ func (h *BotHandler) sendDocument(chatID int64, fileURL string) {
 	}
 }
 
-// Генерация главного меню
-func (h *BotHandler) sendMenu(chatID int64) {
-	msg := tgbotapi.NewMessage(chatID, "Вас приветствует Чат-бот Департамента внутреннего государственного аудита. Выберите раздел:")
+// НОВЫЙ МЕТОД: Генерация меню выбора языка
+func (h *BotHandler) sendLanguageSelection(chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите язык / Тілді таңдаңыз:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🇷🇺 Русский", "lang_ru"),
+			tgbotapi.NewInlineKeyboardButtonData("🇰🇿 Қазақша", "lang_kz"),
+		),
+	)
+	h.bot.Send(msg)
+}
+
+// Генерация главного меню (теперь принимает язык)
+func (h *BotHandler) sendMenu(chatID int64, lang string) {
+	// Если язык не задан, ставим дефолтный
+	if lang == "" {
+		lang = "ru"
+	}
+
+	msg := tgbotapi.NewMessage(chatID, uiTexts[lang]["welcome"])
 
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Анкетирование", "menu_audit")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Онлайн-приемная", "menu_app")),
-		// Добавил недостающую кнопку из твоего JSON-а
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Уполномоченный по этике", "menu_ethics")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Пресс-центр", "menu_press")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(uiTexts[lang]["menu_audit"], "menu_audit")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(uiTexts[lang]["menu_app"], "menu_app")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(uiTexts[lang]["menu_ethics"], "menu_ethics")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(uiTexts[lang]["menu_press"], "menu_press")),
 	)
 
 	h.bot.Send(msg)
-	h.sessions.Store(chatID, UserState{Step: StateMenu, Answers: make(map[string]string)})
 }
 
-// Обработка нажатий в главном меню
 func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserState) {
 	switch data {
 	case "menu_press":
@@ -290,19 +322,18 @@ func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserStat
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonURL("График", "https://www.gov.kz/memleket/entities/kvga/about/structure/departments/activity/4728/1?lang=ru")),
 		)
 		h.bot.Send(msg)
-		h.sendMenu(chatID) // Возвращаем меню
+		h.sendMenu(chatID, state.Language)
 
 	case "menu_ethics":
-		// Отправка PDF графика
 		h.sendDocument(chatID, "https://robochat.storage.yandexcloud.net/attachments/day/20284/421499/file/OLnAb2ZL/%D3%98%D0%B4%D0%B5%D0%BF%20%D0%B3%D1%80%D0%B0%D1%84%D0%B8%D0%BA.pdf")
 		h.sendMessage(chatID, "Уполномоченный по этике Департамента")
-		h.sendMenu(chatID)
+		h.sendMenu(chatID, state.Language)
 
 	case "menu_audit":
 		state.Step = StateAuditWarning
-		// Отправка PDF методички
 		h.sendDocument(chatID, "https://robochat.storage.yandexcloud.net/attachments/day/20285/421499/file/gawYYoV4/%D0%9C%D0%B5%D1%82%D0%BE%D0%B4%D0%B8%D1%87%D0%BA%D0%B0%20%D0%B4%D0%BB%D1%8F%20%D1%81%D0%BE%D1%82%D1%80%20%281%29.pdf")
-		
+
+		// Здесь позже тоже можно вынести текст в `uiTexts` для перевода
 		msg := tgbotapi.NewMessage(chatID, "Анкета предназначена для мониторинга соблюдения сотрудниками... Заведомо ложные ответы влекут ответственность (ст. 419, 274 УК РК).")
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
@@ -329,7 +360,7 @@ func (h *BotHandler) handleAuditWarning(chatID int64, data string, messageID int
 		state.Step = StateAuditPosition
 		h.sendMessage(chatID, "Пожалуйста, укажите Вашу должность для продолжения:")
 	} else if data == "audit_disagree" {
-		h.sendMenu(chatID)
+		h.sendMenu(chatID, state.Language)
 	}
 }
 
@@ -337,17 +368,16 @@ func (h *BotHandler) sendAuditQuestion(chatID int64, index int) {
 	msg := tgbotapi.NewMessage(chatID, auditQuestions[index])
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Да", "yes"),
-			tgbotapi.NewInlineKeyboardButtonData("Нет", "no"),
+			tgbotapi.NewInlineKeyboardButtonData("Да", "Да"),
+			tgbotapi.NewInlineKeyboardButtonData("Нет", "Нет"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Затрудняюсь ответить", "dunno"),
+			tgbotapi.NewInlineKeyboardButtonData("Затрудняюсь ответить", "Затрудняюсь ответить"),
 		),
 	)
 	h.bot.Send(msg)
 }
 
-// isValidBIN проверяет, состоит ли строка ровно из 12 цифр
 func (h *BotHandler) isValidBIN(bin string) bool {
 	match, _ := regexp.MatchString(`^\d{12}$`, bin)
 	return match
