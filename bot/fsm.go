@@ -455,11 +455,11 @@ func (h *BotHandler) sendAuditQuestion(chatID int64, state *UserState) {
 	// Используем унифицированные ключи `ans_yes`, `ans_no`, `ans_idk`
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_yes"], "ans_yes"),
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_no"], "ans_no"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_yes"], "yes"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_no"], "no"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_idk"], "ans_idk"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_idk"], "idk"),
 		),
 	)
 	h.bot.Send(msg)
