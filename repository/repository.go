@@ -1,5 +1,5 @@
 package repository
-//D:\Project\backend_projects\audit_bot\repository\repository.go
+
 import (
 	"context"
 	"encoding/json"
@@ -14,6 +14,8 @@ import (
 type BotRepository interface {
 	SaveAuditRecord(ctx context.Context, chatID int64, bin string, position string, answers map[string]string, score int) error
 	SaveAppointment(ctx context.Context, chatID int64, target string, fullName string, phone string, question string) error
+	GetAuditRecords(ctx context.Context, limit int, offset int) ([]AuditRecord, error)
+	GetAppointments(ctx context.Context, limit int, offset int) ([]Appointment, error)
 }
 
 // botRepositoryImpl реализует интерфейс BotRepository.
@@ -28,9 +30,7 @@ func NewBotRepository(db *gorm.DB) BotRepository {
 	}
 }
 
-// SaveAuditRecord конвертирует мапу ответов в JSONB и сохраняет запись в БД.
 func (r *botRepositoryImpl) SaveAuditRecord(ctx context.Context, chatID int64, bin string, position string, answers map[string]string, score int) error {
-	// Сериализация мапы в байты для типа datatypes.JSON (O(N) time complexity)
 	answersBytes, err := json.Marshal(answers)
 	if err != nil {
 		return fmt.Errorf("repository.SaveAuditRecord - failed to marshal answers: %w", err)
@@ -44,17 +44,14 @@ func (r *botRepositoryImpl) SaveAuditRecord(ctx context.Context, chatID int64, b
 		Score:      score,
 	}
 
-	// Используем WithContext для контроля таймаутов
 	if err := r.db.WithContext(ctx).Create(record).Error; err != nil {
 		log.Printf("[ERROR] Failed to save audit record for TelegramID %d: %v\n", chatID, err)
 		return fmt.Errorf("repository.SaveAuditRecord - db insert failed: %w", err)
 	}
 
-	log.Printf("[INFO] Successfully saved audit record for TelegramID %d\n", chatID)
 	return nil
 }
 
-// SaveAppointment атомарно сохраняет заявку на онлайн-прием.
 func (r *botRepositoryImpl) SaveAppointment(ctx context.Context, chatID int64, target string, fullName string, phone string, question string) error {
 	appointment := &Appointment{
 		TelegramID:    chatID,
@@ -69,6 +66,23 @@ func (r *botRepositoryImpl) SaveAppointment(ctx context.Context, chatID int64, t
 		return fmt.Errorf("repository.SaveAppointment - db insert failed: %w", err)
 	}
 
-	log.Printf("[INFO] Successfully saved appointment for TelegramID %d\n", chatID)
 	return nil
+}
+
+// GetAuditRecords возвращает список аудитов с учетом пагинации (избегаем Out of Memory)
+func (r *botRepositoryImpl) GetAuditRecords(ctx context.Context, limit int, offset int) ([]AuditRecord, error) {
+	var records []AuditRecord
+	if err := r.db.WithContext(ctx).Order("created_at desc").Limit(limit).Offset(offset).Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch audits: %w", err)
+	}
+	return records, nil
+}
+
+// GetAppointments возвращает список заявок с учетом пагинации
+func (r *botRepositoryImpl) GetAppointments(ctx context.Context, limit int, offset int) ([]Appointment, error) {
+	var appointments []Appointment
+	if err := r.db.WithContext(ctx).Order("created_at desc").Limit(limit).Offset(offset).Find(&appointments).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch appointments: %w", err)
+	}
+	return appointments, nil
 }

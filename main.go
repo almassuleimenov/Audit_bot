@@ -1,11 +1,13 @@
 package main
 
-// D:\Project\backend_projects\audit_bot\main.go
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gorm.io/driver/postgres"
@@ -13,25 +15,43 @@ import (
 
 	"github.com/joho/godotenv"
 
-	// Используем полное имя модуля из твоего go.mod
 	"github.com/almassuleimenov/Audit_bot/bot"
 	"github.com/almassuleimenov/Audit_bot/repository"
 )
 
+// parsePagination извлекает limit и offset из HTTP-запроса
+func parsePagination(r *http.Request) (limit, offset int) {
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	limit, err = strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit < 1 || limit > 100 {
+		limit = 50 // Дефолтное значение для защиты от выгрузки огромных данных
+	}
+
+	offset = (page - 1) * limit
+	return limit, offset
+}
+
 func main() {
-	// Загружаем .env файл
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("[WARNING] Файл .env не найден. Убедись, что он лежит рядом с main.go")
 	}
 
-	// Инициализируем токен
 	token := os.Getenv("TELEGRAM_TOKEN")
 	if token == "" {
 		log.Fatal("[ERROR] TELEGRAM_TOKEN not set in environment")
 	}
 
-	// Инициализируем Telegram бот
+	adminIDStr := os.Getenv("ADMIN_CHAT_ID")
+	adminID, err := strconv.ParseInt(adminIDStr, 10, 64)
+	if err != nil || adminID == 0 {
+		log.Fatal("[ERROR] ADMIN_CHAT_ID is missing or invalid in environment")
+	}
+
 	botAPI, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to create bot: %v", err)
@@ -39,7 +59,6 @@ func main() {
 
 	log.Printf("[INFO] Authorized on account %s", botAPI.Self.UserName)
 
-	// Инициализируем подключение к PostgreSQL
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = "host=localhost user=postgres password=postgres dbname=audit_bot port=5432 sslmode=disable TimeZone=Asia/Almaty"
@@ -51,79 +70,87 @@ func main() {
 
 	log.Println("[INFO] Connected to database")
 
-	// Создаем таблицы
 	err = db.AutoMigrate(&repository.AuditRecord{}, &repository.Appointment{})
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to migrate database: %v", err)
 	}
 
-	log.Println("[INFO] Database migrations completed")
-
-	// Инициализация слоев (Dependency Injection)
+	// Dependency Injection
 	repo := repository.NewBotRepository(db)
-	handler := bot.NewBotHandler(botAPI, repo)
+	handler := bot.NewBotHandler(botAPI, repo, adminID) // Передаем Admin ID
 
-	// 1. Создаем функцию для обработки CORS
 	corsMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			// Разрешаем запросы с любых доменов
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-			// Если это предварительный запрос OPTIONS от браузера - отвечаем 200 OK
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-
-			// Передаем управление дальше к самому обработчику
 			next(w, r)
 		}
 	}
 
-	// 2. Запускаем HTTP сервер в горутине
+	// Настройка HTTP сервера
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" {
 			port = "8080"
 		}
 
-		// Роут для проверки жизнеспособности сервиса (Render health check)
-		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		mux := http.NewServeMux()
+
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("Bot is alive!"))
 		})
 
-		// Эндпоинт для Аудитов (обернут в CORS)
-		http.HandleFunc("/api/audits", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			var records []repository.AuditRecord
-			// Запрос к БД занимает O(N)
-			if err := db.Order("created_at desc").Find(&records).Error; err != nil {
+		mux.HandleFunc("/api/audits", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			limit, offset := parsePagination(r)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			records, err := repo.GetAuditRecords(ctx, limit, offset)
+			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(records)
 		}))
 
-		// Эндпоинт для Заявок (обернут в CORS)
-		http.HandleFunc("/api/appointments", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			var appointments []repository.Appointment
-			if err := db.Order("created_at desc").Find(&appointments).Error; err != nil {
+		mux.HandleFunc("/api/appointments", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			limit, offset := parsePagination(r)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			appointments, err := repo.GetAppointments(ctx, limit, offset)
+			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(appointments)
 		}))
 
+		// Защита от Slowloris: Инициализируем сервер со строгими таймаутами
+		srv := &http.Server{
+			Addr:         ":" + port,
+			Handler:      mux,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		}
+
 		log.Printf("[INFO] Starting HTTP server on port %s", port)
-		if err := http.ListenAndServe(":"+port, nil); err != nil {
-			log.Printf("[ERROR] HTTP server failed: %v", err)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("[ERROR] HTTP server failed: %v", err)
 		}
 	}()
 
-	// 3. Запускаем асинхронный FSM движок (он блокирует основной поток, не давая программе завершиться)
 	handler.Start()
 }

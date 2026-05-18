@@ -1,7 +1,5 @@
 package bot
 
-// D:\Project\backend_projects\audit_bot\bot\fsm.go
-
 import (
 	"context"
 	"fmt"
@@ -32,18 +30,18 @@ const (
 )
 
 // UserState хранит текущий контекст диалога пользователя
-// Добавлен sync.Mutex для безопасной конкурентной работы
 type UserState struct {
-	mu            sync.Mutex
-	Step          int
-	Language      string // "ru" или "kk"
-	
+	mu           sync.Mutex
+	LastActivity time.Time // Время последнего действия для TTL-очистки
+	Step         int
+	Language     string
+
 	// Данные для Аудита
 	Position      string
 	BIN           string
 	Answers       map[string]string
 	QuestionIndex int
-	
+
 	// Данные для Приемной
 	TargetManager string
 	FullName      string
@@ -51,7 +49,7 @@ type UserState struct {
 	PhoneNumber   string
 }
 
-// i18n словари локализации
+// i18n словари локализации (оставлены без изменений)
 var translations = map[string]map[string]string{
 	"ru": {
 		"menu_greet":     "Вас приветствует Чат-бот Департамента внутреннего государственного аудита. Выберите раздел:",
@@ -143,15 +141,17 @@ var auditQuestions = map[string][]string{
 }
 
 type BotHandler struct {
-	bot      *tgbotapi.BotAPI
-	repo     repository.BotRepository
-	sessions sync.Map
+	bot         *tgbotapi.BotAPI
+	repo        repository.BotRepository
+	sessions    sync.Map
+	adminChatID int64
 }
 
-func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository) *BotHandler {
+func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID int64) *BotHandler {
 	return &BotHandler{
-		bot:  bot,
-		repo: repo,
+		bot:         bot,
+		repo:        repo,
+		adminChatID: adminID,
 	}
 }
 
@@ -163,21 +163,52 @@ func (h *BotHandler) Start() {
 
 	log.Println("[INFO] FSM Engine started (Multi-language, Thread-safe)")
 
+	// Запуск фоновой очистки сессий от утечек памяти. TTL = 1 час
+	go h.startSessionCleaner(1 * time.Hour)
+
 	for update := range updates {
 		go h.processUpdate(update)
 	}
 }
 
-// getOrCreateState атомарно извлекает или создает состояние пользователя
+// startSessionCleaner предотвращает утечку памяти, удаляя старые сессии
+func (h *BotHandler) startSessionCleaner(ttl time.Duration) {
+	ticker := time.NewTicker(10 * time.Minute) // Проверяем каждые 10 минут
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		var deletedCount int
+
+		h.sessions.Range(func(key, value interface{}) bool {
+			state := value.(*UserState)
+
+			state.mu.Lock()
+			lastActivity := state.LastActivity
+			state.mu.Unlock()
+
+			if now.Sub(lastActivity) > ttl {
+				h.sessions.Delete(key)
+				deletedCount++
+			}
+			return true // продолжаем итерацию
+		})
+
+		if deletedCount > 0 {
+			log.Printf("[INFO] Очищено неактивных сессий: %d", deletedCount)
+		}
+	}
+}
+
 func (h *BotHandler) getOrCreateState(chatID int64) *UserState {
 	val, loaded := h.sessions.LoadOrStore(chatID, &UserState{
-		Step:    StateLanguage,
-		Answers: make(map[string]string),
+		Step:         StateLanguage,
+		Answers:      make(map[string]string),
+		LastActivity: time.Now(),
 	})
-	
+
 	state := val.(*UserState)
-	
-	// Если это новая сессия, гарантируем инициализацию карты
+
 	if !loaded {
 		state.Answers = make(map[string]string)
 	}
@@ -192,7 +223,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		chatID = update.Message.Chat.ID
 		text = update.Message.Text
 
-		// Защита от медиафайлов
 		if update.Message.Photo != nil || update.Message.Document != nil || update.Message.Video != nil || update.Message.Audio != nil {
 			state := h.getOrCreateState(chatID)
 			state.mu.Lock()
@@ -209,7 +239,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		chatID = update.CallbackQuery.Message.Chat.ID
 		callbackData = update.CallbackQuery.Data
 
-		// Ответ на CallbackQuery для снятия "часиков" с кнопки
 		_, err := h.bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 		if err != nil {
 			log.Printf("[WARNING] Failed to acknowledge callback: %v", err)
@@ -218,14 +247,12 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		return
 	}
 
-	// Извлекаем состояние как указатель
 	state := h.getOrCreateState(chatID)
 
-	// Блокируем сессию на время обработки текущего апдейта
 	state.mu.Lock()
+	state.LastActivity = time.Now() // Обновляем TTL при любой активности
 	defer state.mu.Unlock()
 
-	// Сброс состояния
 	if text == "/start" {
 		state.Step = StateLanguage
 		state.Language = ""
@@ -234,7 +261,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		return
 	}
 
-	// Маршрутизатор (FSM)
 	switch state.Step {
 	case StateLanguage:
 		if callbackData == "lang_ru" || callbackData == "lang_kk" {
@@ -242,8 +268,7 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 			state.Step = StateMenu
 			h.sendMenu(chatID, state.Language)
 		} else {
-			// Если пользователь пишет текст, когда нужно выбрать язык
-			lang := "ru" // fallback
+			lang := "ru"
 			h.sendMessage(chatID, translations[lang]["err_lang"]+"\n"+translations["kk"]["err_lang"])
 			h.sendLanguageSelection(chatID)
 		}
@@ -278,9 +303,7 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		}
 
 	case StateAuditQuestions:
-		// Принимаем только системные ключи (ans_yes, ans_no, ans_idk)
 		if callbackData == "ans_yes" || callbackData == "ans_no" || callbackData == "ans_idk" {
-			// В БД сохраняем читаемый вариант на основе ключа, либо сам ключ (оставил системные ключи для единообразия в БД)
 			qKey := fmt.Sprintf("q%d", state.QuestionIndex+1)
 			state.Answers[qKey] = callbackData
 			state.QuestionIndex++
@@ -347,28 +370,29 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 				log.Printf("[ERROR] SaveAppointment: %v", err)
 				h.sendMessage(chatID, translations[state.Language]["err_save"])
 			} else {
-				adminChatID := int64(601610)
+				// Используем ID администратора из конфигурации
 				adminMsg := fmt.Sprintf("🔔 *Новая запись на прием!*\n\n*К кому:* %s\n*ФИО:* %s\n*Вопрос:* %s\n*Телефон:* %s",
 					state.TargetManager, state.FullName, state.Question, state.PhoneNumber)
 
-				msg := tgbotapi.NewMessage(adminChatID, adminMsg)
+				msg := tgbotapi.NewMessage(h.adminChatID, adminMsg)
 				msg.ParseMode = "Markdown"
 
 				if _, err := h.bot.Send(msg); err != nil {
-					log.Printf("[ERROR] Не удалось отправить алерт: %v", err)
+					log.Printf("[ERROR] Не удалось отправить алерт админу: %v", err)
 				}
 
 				h.sendMessage(chatID, translations[state.Language]["app_success"])
 			}
+
+			// Заявка оформлена. Удаляем сессию, чтобы очистить память, и переводим в меню
+			h.sessions.Delete(chatID)
 			state.Step = StateMenu
 			h.sendMenu(chatID, state.Language)
 		}
 	}
-	// h.sessions.Store больше не нужен, так как мы работаем с указателем state по ссылке
 }
 
 // --- Вспомогательные методы ---
-
 func (h *BotHandler) sendLanguageSelection(chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, "🇷🇺 Выберите язык интерфейса\n🇰🇿 Интерфейс тілін таңдаңыз")
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
@@ -451,15 +475,14 @@ func (h *BotHandler) sendAuditQuestion(chatID int64, state *UserState) {
 	index := state.QuestionIndex
 
 	msg := tgbotapi.NewMessage(chatID, auditQuestions[lang][index])
-	
-	// Используем унифицированные ключи `ans_yes`, `ans_no`, `ans_idk`
+
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_yes"], "yes"),
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_no"], "no"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_yes"], "ans_yes"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_no"], "ans_no"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_idk"], "idk"),
+			tgbotapi.NewInlineKeyboardButtonData(translations[lang]["btn_idk"], "ans_idk"),
 		),
 	)
 	h.bot.Send(msg)
