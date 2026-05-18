@@ -27,3 +27,12 @@ type Appointment struct {
 	Question      string    `gorm:"type:text;not null;comment:Суть вопроса"`
 	CreatedAt     time.Time `gorm:"autoCreateTime;index"`
 }
+// Новая модель для динамических вопросов
+type SurveyQuestion struct {
+	ID        uint      `gorm:"primaryKey"`
+	TextRU    string    `gorm:"type:text;not null;comment:Текст вопроса на русском"`
+	TextKK    string    `gorm:"type:text;not null;comment:Текст вопроса на казахском"`
+	OrderNum  int       `gorm:"not null;comment:Порядковый номер вопроса"`
+	IsActive  bool      `gorm:"default:true;comment:Активен ли вопрос"`
+	CreatedAt time.Time `gorm:"autoCreateTime"`
+}
