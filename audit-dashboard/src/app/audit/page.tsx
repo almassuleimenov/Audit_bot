@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { exportToExcel } from '@/lib/exportToExcel';
 
 // Типизация данных с твоего бэкенда
 interface AuditRecord {
@@ -43,7 +42,7 @@ export default function AuditPage() {
   }, []);
 
   const handleExport = () => {
-    exportToExcel(records, 'Audit_Records');
+    window.open('https://audit-bot-bok1.onrender.com/api/export', '_blank');
   };
 
   const getParsedAnswers = (answers: string | Record<string, string>) => {
