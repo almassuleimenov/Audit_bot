@@ -6,8 +6,16 @@ export function middleware(req: NextRequest) {
   const basicAuth = req.headers.get('authorization');
   const url = req.nextUrl;
 
-  const expectedUser = process.env.ADMIN_USER || 'admin';
-  const expectedPass = process.env.ADMIN_PASSWORD || 'default_secure_password';
+  const expectedUser = process.env.ADMIN_USER;
+  const expectedPass = process.env.ADMIN_PASSWORD;
+
+  // Fail-fast: Если секреты не заданы в окружении, жестко блокируем вход
+  if (!expectedUser || !expectedPass) {
+    return new NextResponse('Internal Server Error: Admin credentials are not configured.', {
+      status: 500,
+    });
+  }
+
   const expectedAuthValue = Buffer.from(`${expectedUser}:${expectedPass}`).toString('base64');
 
   if (basicAuth) {
