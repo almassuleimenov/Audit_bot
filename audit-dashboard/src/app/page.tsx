@@ -13,6 +13,7 @@ export default async function OverviewPage() {
   let stats: StatsData | null = null;
   let error: string | null = null;
 
+  
   try {
     stats = await apiFetch<StatsData>('/api/stats');
   } catch (err) {
