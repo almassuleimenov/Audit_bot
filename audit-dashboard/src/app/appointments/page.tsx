@@ -1,8 +1,5 @@
+import { apiFetch } from '@/lib/api';
 // src/app/appointments/page.tsx
-'use client';
-
-import { useEffect, useState } from 'react';
-
 interface Appointment {
   ID: number;
   FullName: string;
@@ -12,25 +9,24 @@ interface Appointment {
   CreatedAt: string;
 }
 
-export default function AppointmentsPage() {
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+export default async function AppointmentsPage() {
+  let appointments: Appointment[] = [];
+  let error: string | null = null;
 
-  useEffect(() => {
-    const fetchAppointments = async () => {
-      try {
-        const res = await fetch('https://audit-bot-1-j1xj.onrender.com/api/appointments');
-        const data = await res.json();
-        setAppointments(data || []);
-      } catch (error) {
-        console.error("Ошибка загрузки:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  try {
+    appointments = await apiFetch<Appointment[]>('/api/appointments');
+  } catch (err) {
+    error = err instanceof Error ? err.message : 'Ошибка загрузки данных';
+    console.error("Ошибка загрузки заявок:", err);
+  }
 
-    fetchAppointments();
-  }, []);
+  if (error) {
+    return (
+      <div className="p-8 text-center text-red-500">
+        <p>Ошибка загрузки данных: {error}</p>
+      </div>
+    );
+  }
 
   return (
     <main className="flex flex-col min-h-screen">
@@ -44,8 +40,8 @@ export default function AppointmentsPage() {
           <p className="text-gray-500">Управление заявками на встречи и консультации</p>
         </div>
 
-        {isLoading ? (
-          <p className="text-gray-500">Загрузка заявок...</p>
+        {appointments.length === 0 ? (
+          <p className="text-gray-500">Нет заявок на встречи</p>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             {appointments.map((appt) => (

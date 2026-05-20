@@ -1,6 +1,5 @@
 package main
 
-// D:\Project\backend_projects\audit_bot\main.go
 import (
 	"context"
 	"encoding/json"
@@ -36,8 +35,36 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// authMiddleware проверяет наличие и валидность X-API-Key заголовка
+func authMiddleware(expectedKey string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-API-Key")
+		if key != expectedKey {
+			http.Error(w, `{"error": "Unauthorized: Invalid or missing API Key"}`, http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// corsMiddleware настраивает CORS на основе заданного домена
+func corsMiddleware(allowedOrigin string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
+		// Разрешаем прокидывать наш кастомный заголовок X-API-Key
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		
+		// Preflight-запросы (OPTIONS) не должны доходить до проверки авторизации
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func main() {
-	// В проде файла .env может не быть, поэтому ошибку игнорируем осознанно
 	_ = godotenv.Load()
 
 	token := os.Getenv("TELEGRAM_TOKEN")
@@ -51,6 +78,22 @@ func main() {
 		log.Fatal("[ERROR] ADMIN_CHAT_ID is missing or invalid")
 	}
 
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("[ERROR] DATABASE_URL is required in environment variables")
+	}
+	
+	// Строгие проверки безопасности
+	apiKey := os.Getenv("API_SECRET_KEY")
+	if apiKey == "" {
+		log.Fatal("[ERROR] API_SECRET_KEY is required for securing endpoints")
+	}
+
+	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
+	if allowedOrigin == "" {
+		log.Fatal("[ERROR] ALLOWED_ORIGIN is required (e.g. http://localhost:3000)")
+	}
+
 	botAPI, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to create bot: %v", err)
@@ -58,11 +101,6 @@ func main() {
 
 	log.Printf("[INFO] Authorized on account %s", botAPI.Self.UserName)
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		// Fail-fast: Остановка приложения при отсутствии строки подключения
-		log.Fatal("[ERROR] DATABASE_URL is required in environment variables")
-	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to connect to PostgreSQL: %v", err)
@@ -81,19 +119,6 @@ func main() {
 
 	handler := bot.NewBotHandler(botAPI, repo, adminID)
 
-	corsMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			next(w, r)
-		}
-	}
-
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" {
@@ -101,12 +126,19 @@ func main() {
 		}
 
 		mux := http.NewServeMux()
+		
+		// Health check оставляем публичным для балансировщиков и Docker
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("Bot is alive!"))
 		})
 
-		mux.HandleFunc("/api/audits", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// Оборачиваем все API ручки цепочкой: CORS -> Auth -> Handler
+		protect := func(h http.HandlerFunc) http.HandlerFunc {
+			return corsMiddleware(allowedOrigin, authMiddleware(apiKey, h))
+		}
+
+		mux.HandleFunc("/api/audits", protect(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			records, err := repo.GetAuditRecords(context.Background(), limit, offset)
 			if err != nil {
@@ -117,7 +149,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(records)
 		}))
 
-		mux.HandleFunc("/api/appointments", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/appointments", protect(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			appointments, err := repo.GetAppointments(context.Background(), limit, offset)
 			if err != nil {
@@ -128,7 +160,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(appointments)
 		}))
 
-		mux.HandleFunc("/api/questions", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/questions", protect(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == "GET" {
 				questions, err := repo.GetAllQuestions(context.Background())
@@ -155,7 +187,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}))
 
-		mux.HandleFunc("/api/export", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/export", protect(func(w http.ResponseWriter, r *http.Request) {
 			var records []repository.AuditRecord
 			if err := db.Order("created_at desc").Find(&records).Error; err != nil {
 				http.Error(w, "Failed to fetch data", http.StatusInternalServerError)
@@ -186,7 +218,6 @@ func main() {
 
 			for i, rec := range records {
 				rowNum := i + 2
-
 				sumScore += rec.Score
 				if rec.Score == 5 {
 					count5++
@@ -249,7 +280,7 @@ func main() {
 			}
 		}))
 
-		mux.HandleFunc("/api/stats", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/stats", protect(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 
 			type StatsResponse struct {
@@ -258,8 +289,8 @@ func main() {
 				TotalAppointments int64            `json:"total_appointments"`
 				ScoreDistribution map[string]int64 `json:"score_distribution"`
 				DailyDynamics     []struct {
-					Date  string `json:"name"`     // "name" чтобы Recharts на фронте сразу понял
-					Count int64  `json:"Проверки"` // Ключ для графика
+					Date  string `json:"name"`
+					Count int64  `json:"Проверки"`
 				} `json:"daily_dynamics"`
 			}
 
