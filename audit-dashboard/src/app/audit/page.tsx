@@ -24,7 +24,7 @@ export default function AuditPage() {
   useEffect(() => {
     const fetchAudits = async () => {
       try {
-        const res = await fetch('https://audit-bot-bok1.onrender.com/api/audits');
+        const res = await fetch('https://audit-bot-1-j1xj.onrender.com/api/audits');
         if (!res.ok) throw new Error('Network response was not ok');
         const data = await res.json();
         setRecords(data || []);
@@ -42,7 +42,7 @@ export default function AuditPage() {
   }, []);
 
   const handleExport = () => {
-    window.open('https://audit-bot-bok1.onrender.com/api/export', '_blank');
+    window.open('https://audit-bot-1-j1xj.onrender.com/api/export', '_blank');
   };
 
   const getParsedAnswers = (answers: string | Record<string, string>) => {

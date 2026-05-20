@@ -19,7 +19,7 @@ export default function AppointmentsPage() {
   useEffect(() => {
     const fetchAppointments = async () => {
       try {
-        const res = await fetch('https://audit-bot-bok1.onrender.com/api/appointments');
+        const res = await fetch('https://audit-bot-1-j1xj.onrender.com/api/appointments');
         const data = await res.json();
         setAppointments(data || []);
       } catch (error) {

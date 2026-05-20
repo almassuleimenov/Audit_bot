@@ -27,7 +27,7 @@ export default function SettingsPage() {
 
   const fetchQuestions = async () => {
     try {
-      const res = await fetch('https://audit-bot-bok1.onrender.com/api/questions');
+      const res = await fetch('https://audit-bot-1-j1xj.onrender.com/api/questions');
       const data = await res.json();
       setQuestions(data || []);
     } catch (error) {
@@ -44,7 +44,7 @@ export default function SettingsPage() {
   const toggleActive = async (q: SurveyQuestion) => {
     const updated = { ...q, is_active: !q.is_active };
     try {
-      await fetch('https://audit-bot-bok1.onrender.com/api/questions', {
+      await fetch('https://audit-bot-1-j1xj.onrender.com/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated)
@@ -84,7 +84,7 @@ export default function SettingsPage() {
     };
 
     try {
-      await fetch('https://audit-bot-bok1.onrender.com/api/questions', {
+      await fetch('https://audit-bot-1-j1xj.onrender.com/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

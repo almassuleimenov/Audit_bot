@@ -18,7 +18,7 @@ export default function OverviewPage() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch('https://audit-bot-bok1.onrender.com/api/stats');
+        const res = await fetch('https://audit-bot-1-j1xj.onrender.com/api/stats');
         const data = await res.json();
         setStats(data);
       } catch (error) {
