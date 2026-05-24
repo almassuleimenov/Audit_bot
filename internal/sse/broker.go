@@ -16,15 +16,18 @@ type Broker struct {
 	Notifier chan []byte
 	// Карта активных клиентских каналов
 	clients map[chan []byte]bool
+	// Разрешенный origin для CORS
+	allowedOrigin string
 }
 
-// NewBroker инициализирует брокера
-func NewBroker() *Broker {
+// NewBroker инициализирует брокера с указанным CORS origin
+func NewBroker(allowedOrigin string) *Broker {
 	return &Broker{
 		Notifier:       make(chan []byte, 1),
 		newClients:     make(chan chan []byte),
 		closingClients: make(chan chan []byte),
 		clients:        make(map[chan []byte]bool),
+		allowedOrigin:  allowedOrigin,
 	}
 }
 
@@ -68,8 +71,9 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	// Важно для обхода CORS, если фронт и бэк на разных портах локально
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	// Используем конфигурированный origin для безопасности
+	w.Header().Set("Access-Control-Allow-Origin", b.allowedOrigin)
 
 	messageChan := make(chan []byte)
 	b.newClients <- messageChan

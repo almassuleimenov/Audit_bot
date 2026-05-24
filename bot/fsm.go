@@ -195,7 +195,7 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 	}
 
 	state := h.getOrCreateState(chatID)
-	
+
 	// Внимание: Блокируем мьютекс только на обновление активности.
 	// Обертывание долгих I/O операций (DB, API) в мьютекс — антипаттерн SRE,
 	// так как это может заблокировать другие горутины.
@@ -316,7 +316,7 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 			state.PhoneNumber = text
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			
+
 			// Сохраняем в БД
 			h.repo.SaveAppointment(ctx, chatID, state.TargetManager, state.FullName, state.PhoneNumber, state.Question)
 
@@ -328,12 +328,14 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 			h.bot.Send(msg)
 
 			// 2. [НОВОЕ] Формируем и отправляем событие в SSE Брокер для дашборда (O(1))
-			leadEvent := map[string]string{
+			// Генерируем уникальный ID для события (chatID + timestamp)
+			leadEvent := map[string]interface{}{
+				"id":       fmt.Sprintf("%d-%d", chatID, time.Now().UnixNano()),
 				"phone":    state.PhoneNumber,
 				"username": state.FullName,
 				"status":   "NEW",
 			}
-			
+
 			if eventBytes, err := json.Marshal(leadEvent); err == nil {
 				// Асинхронно пушим в канал, чтобы не блокировать бота, если брокер перегружен
 				select {

@@ -1,7 +1,6 @@
 'use client';
 // D:\Project\backend_projects\audit_bot\audit-dashboard\src\app\DashboardClient.tsx
 import { useEffect, useState } from 'react';
-
 // Строгая типизация
 interface LeadEvent {
   id?: string;
@@ -13,6 +12,7 @@ interface LeadEvent {
 export default function DashboardClient() {
   const [leads, setLeads] = useState<LeadEvent[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
     // Внимание: при настроенном прокси (Caddy) и включенном JWT, 
@@ -21,6 +21,7 @@ export default function DashboardClient() {
 
     eventSource.onopen = () => {
       setConnectionStatus('connected');
+      setErrorMessage('');
     };
 
     eventSource.onmessage = (event) => {
@@ -30,11 +31,28 @@ export default function DashboardClient() {
         setLeads((prev) => [newLead, ...prev]); 
       } catch (error) {
         console.error('SSE parsing error:', error);
+        setErrorMessage(`Parse error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     };
 
     eventSource.onerror = () => {
       setConnectionStatus('disconnected');
+      
+      // Получаем детальное объяснение ошибки на основе readyState
+      let errorMsg = 'Connection closed';
+      if (eventSource.readyState === EventSource.CONNECTING) {
+        errorMsg = 'Connecting... (pending)';
+      } else if (eventSource.readyState === EventSource.CLOSED) {
+        errorMsg = 'Connection closed. Possible causes: 401 Unauthorized (need login), network error, or server error. Check browser console for details.';
+      }
+      
+      console.error('[SSE Error]', {
+        readyState: eventSource.readyState,
+        url: eventSource.url,
+        timestamp: new Date().toISOString()
+      });
+      
+      setErrorMessage(errorMsg);
     };
 
     return () => {
@@ -53,6 +71,11 @@ export default function DashboardClient() {
         <span className="text-xs font-mono uppercase tracking-wider text-neutral-400">
           Stream: {connectionStatus}
         </span>
+        {errorMessage && (
+          <span className="text-xs font-mono text-rose-400 ml-auto truncate" title={errorMessage}>
+            {errorMessage}
+          </span>
+        )}
       </div>
 
       {/* Поток лидов */}
@@ -66,8 +89,8 @@ export default function DashboardClient() {
             </div>
           ) : (
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
-              {leads.map((lead, idx) => (
-                <div key={idx} className="flex items-center justify-between p-4 bg-neutral-950 border border-neutral-800 rounded-xl">
+              {leads.map((lead) => (
+                <div key={lead.id || lead.phone} className="flex items-center justify-between p-4 bg-neutral-950 border border-neutral-800 rounded-xl">
                   <span className="text-sm font-mono text-neutral-200">{lead.phone}</span>
                   <span className="text-xs px-2.5 py-1 font-mono font-semibold uppercase bg-emerald-500/10 text-emerald-400 rounded-md border border-emerald-500/20">
                     {lead.status}

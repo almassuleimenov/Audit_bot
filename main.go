@@ -117,8 +117,8 @@ func main() {
 		log.Printf("[WARNING] Ошибка заполнения вопросов: %v", err)
 	}
 
-	// Инициализируем брокер SSE
-	leadBroker := sse.NewBroker()
+	// Инициализируем брокер SSE с конфигурированным CORS origin
+	leadBroker := sse.NewBroker(allowedOrigin)
 	go leadBroker.Start()
 
 	handler := bot.NewBotHandler(botAPI, repo, adminID, leadBroker)

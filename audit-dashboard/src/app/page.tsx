@@ -1,13 +1,17 @@
 import { apiFetch } from '@/lib/api';
 import DashboardClient from './DashboardClient';
 // src/app/page.tsx
-interface StatsData {
+
+// Добавь ключевое слово export
+export interface StatsData {
   total_audits: number;
   average_score: number;
   total_appointments: number;
   score_distribution: Record<string, number>;
-  daily_dynamics: { name: string; Проверки: number }[];
+  daily_dynamics: { name: string; "Проверки": number }[];
 }
+
+// ... остальной код страницы без изменений
 
 export default async function OverviewPage() {
   let stats: StatsData | null = null;
