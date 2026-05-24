@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'https://audit-bot-bok1.onrender.com/api/:path*',
+        destination: 'https://audit-bot-1-j1xj.onrender.com/api/:path*',
       },
     ];
   },
