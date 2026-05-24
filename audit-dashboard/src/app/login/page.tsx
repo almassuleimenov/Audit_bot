@@ -16,7 +16,7 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      // Go-бэкендке сұраныс жібереміз
+      // Отправляем запрос на Go-бэкенд
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: {
@@ -26,16 +26,16 @@ export default function LoginPage() {
       });
 
       if (res.ok) {
-        // HTTP-Only куки браузерде автоматты түрде сақталады
-        // Сәтті логиннен кейін дашбордқа бағыттаймыз
+        // HTTP-Only куки автоматически сохраняются в браузере
+        // После успешного входа перенаправляем на дашборд
         router.push('/');
         router.refresh(); 
       } else {
         const data = await res.json().catch(() => null);
-        setError(data?.message || 'Құпия сөз немесе логин қате');
+        setError(data?.message || 'Неверный пароль или логин');
       }
     } catch (err) {
-      setError('Сервермен байланыс үзілді');
+      setError('Связь с сервером потеряна');
     } finally {
       setIsLoading(false);
     }
@@ -45,7 +45,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-neutral-950 flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h2 className="mt-6 text-center text-2xl font-medium tracking-tight text-neutral-100">
-          Жүйеге кіру
+          Вход в систему
         </h2>
         <p className="mt-2 text-center text-sm text-neutral-500 font-mono">
           System Authentication
@@ -63,7 +63,7 @@ export default function LoginPage() {
 
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-neutral-300">
-                Пайдаланушы аты
+                Имя пользователя
               </label>
               <div className="mt-1">
                 <input
@@ -81,7 +81,7 @@ export default function LoginPage() {
 
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-neutral-300">
-                Құпия сөз
+                Пароль
               </label>
               <div className="mt-1">
                 <input
@@ -103,7 +103,7 @@ export default function LoginPage() {
                 disabled={isLoading}
                 className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-neutral-950 bg-emerald-500 hover:bg-emerald-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-neutral-900 focus:ring-emerald-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isLoading ? 'Тексерілуде...' : 'Кіру'}
+                {isLoading ? 'Проверка...' : 'Вход'}
               </button>
             </div>
           </form>

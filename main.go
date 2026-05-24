@@ -38,24 +38,13 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
-func authMiddleware(expectedKey string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("X-API-Key")
-		if key != expectedKey {
-			http.Error(w, `{"error": "Unauthorized: Invalid or missing API Key"}`, http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	}
-}
-
+// corsMiddleware для обычных HandlerFunc (используется для логина)
 func corsMiddleware(allowedOrigin string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
-		// Важно: для работы куки (JWT) через CORS требуется Allow-Credentials
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -65,13 +54,13 @@ func corsMiddleware(allowedOrigin string, next http.HandlerFunc) http.HandlerFun
 	}
 }
 
-// Обертка для http.Handler (используется для sse.Broker, так как он реализует интерфейс ServeHTTP)
+// corsMiddlewareForHandler для интерфейса http.Handler (используется в цепочке с JWT)
 func corsMiddlewareForHandler(allowedOrigin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -98,11 +87,6 @@ func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("[ERROR] DATABASE_URL is required in environment variables")
-	}
-
-	apiKey := os.Getenv("API_SECRET_KEY")
-	if apiKey == "" {
-		log.Fatal("[ERROR] API_SECRET_KEY is required for securing endpoints")
 	}
 
 	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
@@ -133,12 +117,10 @@ func main() {
 		log.Printf("[WARNING] Ошибка заполнения вопросов: %v", err)
 	}
 
-	// 1. Инициализируем брокер SSE ДО создания роутера и хендлеров
+	// Инициализируем брокер SSE
 	leadBroker := sse.NewBroker()
 	go leadBroker.Start()
 
-	// 2. Передаем брокер в хендлер бота (DI).
-	// Требуется обновить сигнатуру NewBotHandler в bot/handler.go!
 	handler := bot.NewBotHandler(botAPI, repo, adminID, leadBroker)
 
 	go func() {
@@ -154,11 +136,14 @@ func main() {
 			_, _ = w.Write([]byte("Bot is alive!"))
 		})
 
-		protectAPIKey := func(h http.HandlerFunc) http.HandlerFunc {
-			return corsMiddleware(allowedOrigin, authMiddleware(apiKey, h))
+		// НОВАЯ ОБЕРТКА ДЛЯ АВТОРИЗАЦИИ
+		// Объединяет CORS и JWT Middleware. Принимает стандартный HandlerFunc.
+		protectJWT := func(h http.HandlerFunc) http.Handler {
+			return corsMiddlewareForHandler(allowedOrigin, middleware.AuthMiddleware(http.HandlerFunc(h)))
 		}
 
-		mux.HandleFunc("/api/audits", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
+		// Обрати внимание: теперь мы используем mux.Handle вместо mux.HandleFunc для защищенных роутов
+		mux.Handle("/api/audits", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			records, err := repo.GetAuditRecords(context.Background(), limit, offset)
 			if err != nil {
@@ -169,7 +154,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(records)
 		}))
 
-		mux.HandleFunc("/api/appointments", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/appointments", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			appointments, err := repo.GetAppointments(context.Background(), limit, offset)
 			if err != nil {
@@ -180,7 +165,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(appointments)
 		}))
 
-		mux.HandleFunc("/api/questions", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/questions", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == "GET" {
 				questions, err := repo.GetAllQuestions(context.Background())
@@ -207,7 +192,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}))
 
-		mux.HandleFunc("/api/export", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/export", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 			var records []repository.AuditRecord
 			if err := db.Order("created_at desc").Find(&records).Error; err != nil {
 				http.Error(w, "Failed to fetch data", http.StatusInternalServerError)
@@ -300,7 +285,7 @@ func main() {
 			}
 		}))
 
-		mux.HandleFunc("/api/stats", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/api/stats", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 
 			type StatsResponse struct {
@@ -354,10 +339,10 @@ func main() {
 			_ = json.NewEncoder(w).Encode(stats)
 		}))
 
-		// 3. Регистрация эндпоинта логина (на mux, а не на http.DefaultServeMux)
+		// Публичный роут логина
 		mux.HandleFunc("/api/login", corsMiddleware(allowedOrigin, handlers.LoginHandler))
 
-		// 4. Регистрация эндпоинта SSE (через JWT auth middleware и CORS)
+		// SSE роут с единым JWT middleware
 		mux.Handle("/api/stream/leads", corsMiddlewareForHandler(allowedOrigin, middleware.AuthMiddleware(leadBroker)))
 
 		srv := &http.Server{
@@ -369,12 +354,10 @@ func main() {
 
 		log.Printf("[INFO] Starting HTTP server on port %s", port)
 
-		// Блокирующий вызов теперь в самом конце горутины
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[ERROR] HTTP server failed: %v", err)
 		}
 	}()
 
-	// Запуск бота блокирует основной поток, что не дает main() завершиться.
 	handler.Start()
 }
