@@ -1,6 +1,7 @@
 'use client';
 // D:\Project\backend_projects\audit_bot\audit-dashboard\src\app\DashboardClient.tsx
 import { useEffect, useState } from 'react';
+import { StatsData } from './page';
 // Строгая типизация
 interface LeadEvent {
   id?: string;
@@ -9,7 +10,10 @@ interface LeadEvent {
   status: string;
 }
 
-export default function DashboardClient() {
+interface DashboardClientProps {
+  stats: StatsData; // Обязательное описание пропса
+}
+export default function DashboardClient({ stats }: DashboardClientProps) {
   const [leads, setLeads] = useState<LeadEvent[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [errorMessage, setErrorMessage] = useState<string>('');
