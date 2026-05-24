@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/almassuleimenov/Audit_bot/bot"
+	"github.com/almassuleimenov/Audit_bot/internal/sse"
 	"github.com/almassuleimenov/Audit_bot/repository"
 )
 
@@ -54,7 +55,7 @@ func corsMiddleware(allowedOrigin string, next http.HandlerFunc) http.HandlerFun
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
 		// Разрешаем прокидывать наш кастомный заголовок X-API-Key
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-		
+
 		// Preflight-запросы (OPTIONS) не должны доходить до проверки авторизации
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -82,7 +83,7 @@ func main() {
 	if dsn == "" {
 		log.Fatal("[ERROR] DATABASE_URL is required in environment variables")
 	}
-	
+
 	// Строгие проверки безопасности
 	apiKey := os.Getenv("API_SECRET_KEY")
 	if apiKey == "" {
@@ -126,7 +127,7 @@ func main() {
 		}
 
 		mux := http.NewServeMux()
-		
+
 		// Health check оставляем публичным для балансировщиков и Docker
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -345,6 +346,17 @@ func main() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[ERROR] HTTP server failed: %v", err)
 		}
+		// Инициализируем брокер
+		leadBroker := sse.NewBroker()
+		go leadBroker.Start()
+
+		// Эндпоинт для подписки (позже мы обернем его в JWT middleware)
+		http.Handle("/api/stream/leads", leadBroker)
+
+		// Использование в fsm.go или контроллере при успешном сохранении в БД:
+		// ВАЖНО: передаем leadBroker через dependency injection
+		leadData := []byte(`{"phone": "+77001234567", "status": "completed"}`)
+		leadBroker.Notifier <- leadData
 	}()
 
 	handler.Start()
