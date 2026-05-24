@@ -1,16 +1,14 @@
 import { cookies } from 'next/headers';
 
-// В продакшене это будет внутри контейнера, например http://backend:8080
-const API_URL = process.env.NEXT_API_INTERNAL_URL || 'http://localhost:8080'; 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_SECRET_KEY = process.env.API_SECRET_KEY;
 
 interface FetchOptions extends RequestInit {
   params?: Record<string, string | number | boolean>;
 }
 
-// ВАЖНО: Эту функцию можно вызывать ТОЛЬКО в Server Components (page.tsx, layout.tsx) 
-// или в Server Actions. Для Client Components используй стандартный браузерный fetch 
-// с параметром { credentials: 'include' }.
-export async function serverApiFetch<T>(
+// ЭКСПОРТ ОБЯЗАТЕЛЕН
+export async function apiFetch<T>(
   endpoint: string,
   options: FetchOptions = {}
 ): Promise<T> {
@@ -22,9 +20,8 @@ export async function serverApiFetch<T>(
     });
   }
 
-  // Динамическое чтение куки (Server Side)
-  const cookieStore = cookies();
-  const authToken = (await cookieStore).get('auth_token')?.value;
+  const cookieStore = await cookies();
+  const authToken = cookieStore.get('auth_token')?.value;
 
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
@@ -33,11 +30,15 @@ export async function serverApiFetch<T>(
     headers.set('Cookie', `auth_token=${authToken}`);
   }
 
+  if (API_SECRET_KEY) {
+    headers.set('X-API-Key', API_SECRET_KEY);
+  }
+
   try {
     const response = await fetch(url.toString(), {
       ...options,
       headers,
-      cache: options.cache || 'no-store', 
+      cache: options.cache || 'no-store',
     });
 
     if (!response.ok) {
