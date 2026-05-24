@@ -1,47 +1,83 @@
 'use client';
-// src/app/DashboardClient.tsx
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+// D:\Project\backend_projects\audit_bot\audit-dashboard\src\app\DashboardClient.tsx
+import { useEffect, useState } from 'react';
 
-export default function DashboardClient({ stats }: { stats: any }) {
-  const donutData = [
-    { name: 'Оценка 5', value: stats.score_distribution["5"] || 0, fill: '#aff0d8' },
-    { name: 'Оценка 4', value: stats.score_distribution["4"] || 0, fill: '#bac6ec' },
-    { name: 'Оценки 1-3', value: (stats.score_distribution["3"] || 0) + (stats.score_distribution["2"] || 0) + (stats.score_distribution["1"] || 0), fill: '#ffb4a9' }
-  ];
+// Строгая типизация
+interface LeadEvent {
+  id?: string;
+  phone: string;
+  username?: string;
+  status: string;
+}
+
+export default function DashboardClient() {
+  const [leads, setLeads] = useState<LeadEvent[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+
+  useEffect(() => {
+    // Внимание: при настроенном прокси (Caddy) и включенном JWT, 
+    // браузер автоматически прикрепит HTTP-Only куки к этому GET-запросу.
+    const eventSource = new EventSource('/api/stream/leads');
+
+    eventSource.onopen = () => {
+      setConnectionStatus('connected');
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const newLead: LeadEvent = JSON.parse(event.data);
+        // O(1) добавление в начало массива
+        setLeads((prev) => [newLead, ...prev]); 
+      } catch (error) {
+        console.error('SSE parsing error:', error);
+      }
+    };
+
+    eventSource.onerror = () => {
+      setConnectionStatus('disconnected');
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, []);
 
   return (
-    <main className="flex flex-col min-h-screen">
-      <header className="sticky top-0 z-50 flex justify-between items-center px-8 h-16 bg-white/70 backdrop-blur-md border-b border-gray-200">
-        <h2 className="font-bold text-[#182442] text-xl">Панель управления</h2>
-      </header>
-
-      <div className="p-8 max-w-7xl mx-auto w-full flex flex-col gap-6">
-        <div>
-          <h2 className="text-3xl font-bold text-[#182442] mb-1">Доброе утро!</h2>
-          <p className="text-gray-500">Вот краткий обзор текущей ситуации.</p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
-            <p className="text-gray-500 mb-1">Пройденных анкет</p>
-            <h3 className="text-4xl font-bold text-[#182442]">{stats.total_audits}</h3>
-          </div>
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
-            <p className="text-gray-500 mb-1">Средний балл аудиторов</p>
-            <div className="flex items-baseline gap-2">
-              <h3 className="text-4xl font-bold text-[#182442]">{stats.average_score.toFixed(1)}</h3>
-              <span className="text-gray-400">/ 5.0</span>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
-            <p className="text-gray-500 mb-1">Заявок на прием</p>
-            <h3 className="text-4xl font-bold text-[#182442]">{stats.total_appointments}</h3>
-          </div>
-        </div>
-
-        {/* ... (остальной твой код с графиками LineChart и PieChart оставляешь без изменений) ... */}
-        
+    <div className="space-y-6">
+      {/* Статус соединения */}
+      <div className="flex items-center space-x-2 p-4 bg-neutral-900 border border-neutral-800 rounded-xl">
+        <span className={`h-2.5 w-2.5 rounded-full ${
+          connectionStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 
+          connectionStatus === 'connecting' ? 'bg-amber-500' : 'bg-rose-500'
+        }`} />
+        <span className="text-xs font-mono uppercase tracking-wider text-neutral-400">
+          Stream: {connectionStatus}
+        </span>
       </div>
-    </main>
+
+      {/* Поток лидов */}
+      <div className="grid grid-cols-1 gap-6">
+        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+          <h3 className="text-lg font-medium text-neutral-100 mb-4 font-sans tracking-tight">Регистрации (Real-time)</h3>
+          
+          {leads.length === 0 ? (
+            <div className="flex items-center justify-center h-48 border border-dashed border-neutral-800 rounded-xl">
+              <p className="text-sm text-neutral-500 font-mono">Ожидание событий...</p>
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+              {leads.map((lead, idx) => (
+                <div key={idx} className="flex items-center justify-between p-4 bg-neutral-950 border border-neutral-800 rounded-xl">
+                  <span className="text-sm font-mono text-neutral-200">{lead.phone}</span>
+                  <span className="text-xs px-2.5 py-1 font-mono font-semibold uppercase bg-emerald-500/10 text-emerald-400 rounded-md border border-emerald-500/20">
+                    {lead.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

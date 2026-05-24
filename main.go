@@ -17,6 +17,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/almassuleimenov/Audit_bot/bot"
+	"github.com/almassuleimenov/Audit_bot/internal/handlers"
+	"github.com/almassuleimenov/Audit_bot/internal/middleware"
 	"github.com/almassuleimenov/Audit_bot/internal/sse"
 	"github.com/almassuleimenov/Audit_bot/repository"
 )
@@ -36,7 +38,6 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
-// authMiddleware проверяет наличие и валидность X-API-Key заголовка
 func authMiddleware(expectedKey string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("X-API-Key")
@@ -48,21 +49,36 @@ func authMiddleware(expectedKey string, next http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
-// corsMiddleware настраивает CORS на основе заданного домена
 func corsMiddleware(allowedOrigin string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		// Важно: для работы куки (JWT) через CORS требуется Allow-Credentials
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
-		// Разрешаем прокидывать наш кастомный заголовок X-API-Key
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
-		// Preflight-запросы (OPTIONS) не должны доходить до проверки авторизации
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// Обертка для http.Handler (используется для sse.Broker, так как он реализует интерфейс ServeHTTP)
+func corsMiddlewareForHandler(allowedOrigin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -84,7 +100,6 @@ func main() {
 		log.Fatal("[ERROR] DATABASE_URL is required in environment variables")
 	}
 
-	// Строгие проверки безопасности
 	apiKey := os.Getenv("API_SECRET_KEY")
 	if apiKey == "" {
 		log.Fatal("[ERROR] API_SECRET_KEY is required for securing endpoints")
@@ -118,7 +133,13 @@ func main() {
 		log.Printf("[WARNING] Ошибка заполнения вопросов: %v", err)
 	}
 
-	handler := bot.NewBotHandler(botAPI, repo, adminID)
+	// 1. Инициализируем брокер SSE ДО создания роутера и хендлеров
+	leadBroker := sse.NewBroker()
+	go leadBroker.Start()
+
+	// 2. Передаем брокер в хендлер бота (DI).
+	// Требуется обновить сигнатуру NewBotHandler в bot/handler.go!
+	handler := bot.NewBotHandler(botAPI, repo, adminID, leadBroker)
 
 	go func() {
 		port := os.Getenv("PORT")
@@ -128,18 +149,16 @@ func main() {
 
 		mux := http.NewServeMux()
 
-		// Health check оставляем публичным для балансировщиков и Docker
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("Bot is alive!"))
 		})
 
-		// Оборачиваем все API ручки цепочкой: CORS -> Auth -> Handler
-		protect := func(h http.HandlerFunc) http.HandlerFunc {
+		protectAPIKey := func(h http.HandlerFunc) http.HandlerFunc {
 			return corsMiddleware(allowedOrigin, authMiddleware(apiKey, h))
 		}
 
-		mux.HandleFunc("/api/audits", protect(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/audits", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			records, err := repo.GetAuditRecords(context.Background(), limit, offset)
 			if err != nil {
@@ -150,7 +169,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(records)
 		}))
 
-		mux.HandleFunc("/api/appointments", protect(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/appointments", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
 			limit, offset := parsePagination(r)
 			appointments, err := repo.GetAppointments(context.Background(), limit, offset)
 			if err != nil {
@@ -161,7 +180,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(appointments)
 		}))
 
-		mux.HandleFunc("/api/questions", protect(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/questions", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == "GET" {
 				questions, err := repo.GetAllQuestions(context.Background())
@@ -188,7 +207,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}))
 
-		mux.HandleFunc("/api/export", protect(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/export", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
 			var records []repository.AuditRecord
 			if err := db.Order("created_at desc").Find(&records).Error; err != nil {
 				http.Error(w, "Failed to fetch data", http.StatusInternalServerError)
@@ -281,7 +300,7 @@ func main() {
 			}
 		}))
 
-		mux.HandleFunc("/api/stats", protect(func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/api/stats", protectAPIKey(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 
 			type StatsResponse struct {
@@ -335,6 +354,12 @@ func main() {
 			_ = json.NewEncoder(w).Encode(stats)
 		}))
 
+		// 3. Регистрация эндпоинта логина (на mux, а не на http.DefaultServeMux)
+		mux.HandleFunc("/api/login", corsMiddleware(allowedOrigin, handlers.LoginHandler))
+
+		// 4. Регистрация эндпоинта SSE (через JWT auth middleware и CORS)
+		mux.Handle("/api/stream/leads", corsMiddlewareForHandler(allowedOrigin, middleware.AuthMiddleware(leadBroker)))
+
 		srv := &http.Server{
 			Addr:         ":" + port,
 			Handler:      mux,
@@ -343,21 +368,13 @@ func main() {
 		}
 
 		log.Printf("[INFO] Starting HTTP server on port %s", port)
+
+		// Блокирующий вызов теперь в самом конце горутины
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[ERROR] HTTP server failed: %v", err)
 		}
-		// Инициализируем брокер
-		leadBroker := sse.NewBroker()
-		go leadBroker.Start()
-
-		// Эндпоинт для подписки (позже мы обернем его в JWT middleware)
-		http.Handle("/api/stream/leads", leadBroker)
-
-		// Использование в fsm.go или контроллере при успешном сохранении в БД:
-		// ВАЖНО: передаем leadBroker через dependency injection
-		leadData := []byte(`{"phone": "+77001234567", "status": "completed"}`)
-		leadBroker.Notifier <- leadData
 	}()
 
+	// Запуск бота блокирует основной поток, что не дает main() завершиться.
 	handler.Start()
 }

@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/almassuleimenov/Audit_bot/internal/sse"
 	"github.com/almassuleimenov/Audit_bot/repository"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -28,7 +30,9 @@ const (
 	StateAppPhone
 )
 
-// UserState теперь хранит скачанные из БД вопросы
+// Компилируем регулярное выражение один раз при старте (O(1) в рантайме)
+var binRegex = regexp.MustCompile(`^\d{12}$`)
+
 type UserState struct {
 	mu           sync.Mutex
 	LastActivity time.Time
@@ -39,7 +43,7 @@ type UserState struct {
 	BIN           string
 	Answers       map[string]string
 	QuestionIndex int
-	Questions     []repository.SurveyQuestion // Сохраняем вопросы для сессии
+	Questions     []repository.SurveyQuestion
 
 	TargetManager string
 	FullName      string
@@ -111,13 +115,15 @@ type BotHandler struct {
 	repo        repository.BotRepository
 	sessions    sync.Map
 	adminChatID int64
+	broker      *sse.Broker // Интеграция SSE
 }
 
-func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID int64) *BotHandler {
+func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID int64, broker *sse.Broker) *BotHandler {
 	return &BotHandler{
 		bot:         bot,
 		repo:        repo,
 		adminChatID: adminID,
+		broker:      broker,
 	}
 }
 
@@ -189,9 +195,13 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 	}
 
 	state := h.getOrCreateState(chatID)
+	
+	// Внимание: Блокируем мьютекс только на обновление активности.
+	// Обертывание долгих I/O операций (DB, API) в мьютекс — антипаттерн SRE,
+	// так как это может заблокировать другие горутины.
 	state.mu.Lock()
 	state.LastActivity = time.Now()
-	defer state.mu.Unlock()
+	state.mu.Unlock()
 
 	if text == "/start" {
 		state.Step = StateLanguage
@@ -234,7 +244,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		if h.isValidBIN(text) {
 			state.BIN = text
 
-			// Загружаем актуальные вопросы из БД перед началом аудита
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			questions, err := h.repo.GetActiveQuestions(ctx)
@@ -253,7 +262,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 
 	case StateAuditQuestions:
 		if callbackData != "" {
-			// Берем реальный ID вопроса из базы, а не его порядковый номер в массиве
 			currentQuestion := state.Questions[state.QuestionIndex]
 			qKey := fmt.Sprintf("question_%d", currentQuestion.ID)
 
@@ -285,7 +293,6 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 		state.Step = StateMenu
 		h.sendMenu(chatID, state.Language)
 
-	// ... [Код StateAppManager, StateAppFIO, StateAppQuestion, StateAppPhone остался без изменений]
 	case StateAppManager:
 		if callbackData != "" {
 			state.TargetManager = callbackData
@@ -309,13 +316,32 @@ func (h *BotHandler) processUpdate(update tgbotapi.Update) {
 			state.PhoneNumber = text
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			
+			// Сохраняем в БД
 			h.repo.SaveAppointment(ctx, chatID, state.TargetManager, state.FullName, state.PhoneNumber, state.Question)
 
+			// 1. Отправляем уведомление админу
 			adminMsg := fmt.Sprintf("🔔 *Новая запись на прием!*\n\n*К кому:* %s\n*ФИО:* %s\n*Вопрос:* %s\n*Телефон:* %s",
 				state.TargetManager, state.FullName, state.Question, state.PhoneNumber)
 			msg := tgbotapi.NewMessage(h.adminChatID, adminMsg)
 			msg.ParseMode = "Markdown"
 			h.bot.Send(msg)
+
+			// 2. [НОВОЕ] Формируем и отправляем событие в SSE Брокер для дашборда (O(1))
+			leadEvent := map[string]string{
+				"phone":    state.PhoneNumber,
+				"username": state.FullName,
+				"status":   "NEW",
+			}
+			
+			if eventBytes, err := json.Marshal(leadEvent); err == nil {
+				// Асинхронно пушим в канал, чтобы не блокировать бота, если брокер перегружен
+				select {
+				case h.broker.Notifier <- eventBytes:
+				default:
+					log.Println("[WARNING] SSE Broker is full or blocked. Dropped event.")
+				}
+			}
 
 			h.sendMessage(chatID, translations[state.Language]["app_success"])
 			h.sessions.Delete(chatID)
@@ -342,16 +368,18 @@ func (h *BotHandler) sendDynamicAuditQuestion(chatID int64, state *UserState) {
 	}
 
 	var options []string
-	json.Unmarshal(optionsBytes, &options)
+	// Добавлена проверка на ошибку парсинга. Без нее битый JSON в базе положит бота.
+	if err := json.Unmarshal(optionsBytes, &options); err != nil {
+		log.Printf("[ERROR] Failed to unmarshal options for question %d: %v", question.ID, err)
+		options = []string{"Да", "Нет"} // Fallback-вариант
+	}
 
 	msg := tgbotapi.NewMessage(chatID, qText)
 
-	// Динамически создаем клавиатуру
 	var keyboard [][]tgbotapi.InlineKeyboardButton
 
-	// Если вариантов 2 или 3, выводим красиво, если больше - по одному в ряд
 	for _, opt := range options {
-		btn := tgbotapi.NewInlineKeyboardButtonData(opt, opt) // Ключ ответа = Текст ответа
+		btn := tgbotapi.NewInlineKeyboardButtonData(opt, opt)
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(btn))
 	}
 
@@ -429,6 +457,5 @@ func (h *BotHandler) handleMenuChoice(chatID int64, data string, state *UserStat
 }
 
 func (h *BotHandler) isValidBIN(bin string) bool {
-	match, _ := regexp.MatchString(`^\d{12}$`, bin)
-	return match
+	return binRegex.MatchString(bin)
 }
