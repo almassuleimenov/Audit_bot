@@ -3,7 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"os"
+		"os"
 	"time"
 
 	"github.com/almassuleimenov/Audit_bot/internal/auth" // Замени на актуальное имя модуля
@@ -37,14 +37,13 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Отправка JWT токена в HTTP-Only куке
 	// Secure флаг = true только в продакшене (по HTTPS)
-	isProduction := os.Getenv("ENVIRONMENT") == "production"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_token",
 		Value:    tokenString,
 		Expires:  time.Now().Add(24 * time.Hour),
-		HttpOnly: true,         // Запрет доступа из JS
-		Secure:   isProduction, // false для локальной разработки (http), true для продакшена (https)
-		SameSite: http.SameSiteLaxMode,
+		HttpOnly: true,  // Защита от XSS атак
+		Secure:   true,  // Обязательно для SameSite=None, работает только по HTTPS
+		SameSite: http.SameSiteNoneMode,
 		Path:     "/",
 	})
 
