@@ -3,26 +3,70 @@ version: '3.8'
 services:
   db:
     image: postgres:15-alpine
-    container_name: audit_postgres
-    restart: always
+    container_name: audit_bot_db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      TZ: Asia/Almaty
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-audit_db}
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-audit_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  bot:
-    build: .
-    container_name: audit_backend
-    restart: always
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: audit_bot_backend
+    restart: unless-stopped
     depends_on:
-      - db
-    env_file:
-      - .env
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgres://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-audit_db}?sslmode=disable
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - ALLOWED_ORIGIN=http://localhost  # Теперь origin - это Caddy, а не порт 3000
+      - PORT=8080
+    expose:
+      - "8080"
+    # Порт 8080 наружу не прокидываем, к нему имеет доступ только Caddy во внутренней сети
+
+  frontend:
+    build:
+      context: ./audit-dashboard
+      dockerfile: Dockerfile
+    container_name: audit_bot_frontend
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost  # Фронт обращается к Caddy
+    expose:
+      - "3000"
+    # Порт 3000 наружу не прокидываем
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: audit_bot_proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
 
 volumes:
-  pgdata:
+  postgres_data:
+  caddy_data:
+  caddy_config:
