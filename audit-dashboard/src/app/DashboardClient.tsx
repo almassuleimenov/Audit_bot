@@ -21,7 +21,40 @@ export default function DashboardClient({ stats }: DashboardClientProps) {
   useEffect(() => {
     // Внимание: при настроенном прокси (Caddy) и включенном JWT, 
     // браузер автоматически прикрепит HTTP-Only куки к этому GET-запросу.
-    const eventSource = new EventSource('/api/stream/leads');
+    // ... внутри useEffect ...
+
+    // Обращаемся НАПРЯМУЮ к Render, минуя Vercel Proxy, чтобы избежать разрыва по тайм-ауту.
+    // Флаг withCredentials: true критически важен — он заставляет браузер 
+    // прикрепить HttpOnly JWT-куку к этому Cross-Origin запросу.
+    const eventSource = new EventSource('https://audit-bot-bok1.onrender.com/api/stream/leads', {
+      withCredentials: true 
+    });
+
+    eventSource.onopen = () => {
+      console.log('[SRE] SSE Connection established');
+      // Здесь можешь сбросить ошибку 401 в стейте, если она была
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const newLead = JSON.parse(event.data);
+        // Твоя логика обновления стейта...
+        // setLeads((prev) => [newLead, ...prev]);
+      } catch (error) {
+        console.error('[SRE] Failed to parse SSE data:', error);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('[SRE] SSE Stream disconnected:', error);
+      eventSource.close();
+      
+      // Здесь можно добавить логику реконнекта через setTimeout (Exponential Backoff)
+    };
+
+    return () => {
+      eventSource.close(); // Обязательно закрываем соединение при размонтировании
+    };
 
     eventSource.onopen = () => {
       setConnectionStatus('connected');
