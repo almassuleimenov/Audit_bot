@@ -14,42 +14,39 @@ import (
 	"github.com/almassuleimenov/Audit_bot/repository"
 )
 
-// State определяет текущий шаг пользователя в машине состояний
 type State int
 
 const (
 	StateIdle State = iota
 	StateWaitingBIN
 	StateWaitingPosition
-	StateSurveyDynamic // Единый стейт для всех динамических вопросов
+	StateSurveyDynamic
 	StateWaitingScore
 )
 
-// Session хранит контекст текущего диалога с пользователем
 type Session struct {
+	mu            sync.Mutex // Блокировка состояния конкретной сессии для защиты map и полей
 	ChatID        int64
 	State         State
 	BIN           string
 	Position      string
-	Language      string // "ru" или "kk" (задел под локализацию)
+	Language      string
 	Questions     []repository.SurveyQuestion
 	CurrentQIndex int
-	Answers       map[string]string // Ключ: текст вопроса, Значение: ответ
+	Answers       map[string]string
 	Score         int
 }
 
-// BotHandler инкапсулирует логику бота, БД и SSE
 type BotHandler struct {
 	bot        *tgbotapi.BotAPI
 	repo       repository.BotRepository
 	adminID    int64
 	leadBroker *sse.Broker
 
-	mu       sync.RWMutex
+	mu       sync.RWMutex // Блокировка только для пула сессий
 	sessions map[int64]*Session
 }
 
-// NewBotHandler конструктор для обработчика
 func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID int64, broker *sse.Broker) *BotHandler {
 	return &BotHandler{
 		bot:        bot,
@@ -60,34 +57,36 @@ func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID 
 	}
 }
 
-// getSession потокобезопасно извлекает или создает сессию
+// getSession использует паттерн Double-Checked Locking
 func (h *BotHandler) getSession(chatID int64) *Session {
 	h.mu.RLock()
 	session, exists := h.sessions[chatID]
 	h.mu.RUnlock()
 
 	if !exists {
-		session = &Session{
-			ChatID:   chatID,
-			State:    StateIdle,
-			Language: "ru", // По умолчанию ставим русский (можно расширить)
-			Answers:  make(map[string]string),
-		}
 		h.mu.Lock()
-		h.sessions[chatID] = session
-		h.mu.Unlock()
+		defer h.mu.Unlock()
+		// Двойная проверка на случай, если другая горутина уже создала сессию
+		session, exists = h.sessions[chatID]
+		if !exists {
+			session = &Session{
+				ChatID:   chatID,
+				State:    StateIdle,
+				Language: "ru",
+				Answers:  make(map[string]string),
+			}
+			h.sessions[chatID] = session
+		}
 	}
 	return session
 }
 
-// clearSession очищает данные после завершения
 func (h *BotHandler) clearSession(chatID int64) {
 	h.mu.Lock()
 	delete(h.sessions, chatID)
 	h.mu.Unlock()
 }
 
-// Start запускает поллинг обновлений (горутина SRE-архитектуры)
 func (h *BotHandler) Start() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -95,26 +94,31 @@ func (h *BotHandler) Start() {
 	updates := h.bot.GetUpdatesChan(u)
 
 	for update := range updates {
+		// Асинхронная обработка O(1) диспетчеризация
 		if update.Message != nil {
-			h.handleMessage(update.Message)
+			go h.handleMessage(update.Message)
 		} else if update.CallbackQuery != nil {
-			// Если решишь использовать Inline кнопки, обработка пойдет здесь
-			h.handleCallback(update.CallbackQuery)
+			go h.handleCallback(update.CallbackQuery)
 		}
 	}
 }
 
-// handleMessage маршрутизирует входящие текстовые сообщения
 func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	text := msg.Text
 
 	session := h.getSession(chatID)
+	
+	// Блокируем конкретную сессию на время обработки сообщения.
+	// Защищает от спама и Data Races внутри State Machine.
+	session.mu.Lock()
+	defer session.mu.Unlock()
 
-	// Перехват глобальных команд
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
+			// Так как мы внутри лока сессии, вызываем очистку пула безопасно 
+			// (в clearSession свой лок на мапу sessions)
 			h.clearSession(chatID)
 			reply := tgbotapi.NewMessage(chatID, "Добро пожаловать в систему аудита! Отправьте команду /audit для начала проверки.")
 			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
@@ -122,7 +126,13 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			return
 		case "audit":
 			h.clearSession(chatID)
-			session = h.getSession(chatID) // Создаем новую чистую сессию
+			
+			// Мы очистили сессию в мапе, но текущая горутина все еще держит мьютекс старого объекта session.
+			// Необходимо отпустить его и получить новый.
+			session.mu.Unlock()
+			session = h.getSession(chatID)
+			session.mu.Lock()
+			
 			session.State = StateWaitingBIN
 			
 			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, введите БИН вашей организации (12 цифр):")
@@ -132,7 +142,6 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		}
 	}
 
-	// Машина состояний (FSM)
 	switch session.State {
 	case StateWaitingBIN:
 		session.BIN = text
@@ -143,7 +152,6 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	case StateWaitingPosition:
 		session.Position = text
 		
-		// Загружаем активные вопросы из базы данных (O(1) операция IO)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		
@@ -156,7 +164,6 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			return
 		}
 
-		// Инициализируем динамический опрос
 		session.Questions = questions
 		session.CurrentQIndex = 0
 		session.State = StateSurveyDynamic
@@ -164,23 +171,16 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		h.askCurrentQuestion(session)
 
 	case StateSurveyDynamic:
-		// Сохраняем ответ на текущий вопрос
 		currentQ := session.Questions[session.CurrentQIndex]
 		session.Answers[currentQ.TextRU] = text
-
-		// Переходим к следующему
 		session.CurrentQIndex++
 
-		// Проверяем, остались ли еще вопросы
 		if session.CurrentQIndex < len(session.Questions) {
 			h.askCurrentQuestion(session)
 		} else {
-			// Вопросы закончились, переходим к финальной оценке
 			session.State = StateWaitingScore
 			
 			msg := tgbotapi.NewMessage(chatID, "Опрос завершен! Оцените работу аудиторов по 5-балльной шкале (где 5 - отлично, 1 - очень плохо):")
-			
-			// Клавиатура для оценки
 			row := []tgbotapi.KeyboardButton{
 				tgbotapi.NewKeyboardButton("1"),
 				tgbotapi.NewKeyboardButton("2"),
@@ -202,7 +202,6 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		
 		session.Score = score
 
-		// Сохраняем все данные в БД
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		
@@ -219,13 +218,9 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 		h.bot.Send(msg)
 
-		// TODO: В следующем шаге мы будем генерировать и отправлять клиенту его уникальный номер тикета здесь.
-
-		// Уведомляем админов через SSE (Live Dashboard)
 		notification := fmt.Sprintf("Новый аудит завершен! БИН: %s, Оценка: %d", session.BIN, session.Score)
 		h.leadBroker.Notifier <- []byte(notification)
 
-		// Очищаем стейт, чтобы избежать утечек памяти
 		h.clearSession(chatID)
 
 	default:
@@ -235,30 +230,23 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	}
 }
 
-// askCurrentQuestion формирует сообщение с текущим вопросом и динамической клавиатурой
 func (h *BotHandler) askCurrentQuestion(session *Session) {
 	q := session.Questions[session.CurrentQIndex]
-	
-	// Выбираем текст в зависимости от языка (пока хардкод на RU, можно внедрить переключатель)
 	qText := q.TextRU
 	var options []string
 	
-	// Парсим JSON варианты ответов (O(N) где N - количество вариантов ответа, обычно 2-4)
 	err := json.Unmarshal(q.OptionsRU, &options)
 	if err != nil {
 		log.Printf("[WARNING] Не удалось распарсить варианты ответов для вопроса ID %d. Используем стандартные.", q.ID)
-		options = []string{"Да", "Нет"} // Fallback механизм
+		options = []string{"Да", "Нет"}
 	}
 
 	msg := tgbotapi.NewMessage(session.ChatID, qText)
-
-	// Собираем динамическую клавиатуру
 	var row []tgbotapi.KeyboardButton
 	for _, opt := range options {
 		row = append(row, tgbotapi.NewKeyboardButton(opt))
 	}
 	
-	// Оборачиваем строку в клавиатуру (OneTimeKeyboard для чистоты UI)
 	keyboard := tgbotapi.NewReplyKeyboard(row)
 	keyboard.OneTimeKeyboard = true 
 	keyboard.ResizeKeyboard = true
@@ -267,9 +255,7 @@ func (h *BotHandler) askCurrentQuestion(session *Session) {
 	h.bot.Send(msg)
 }
 
-// handleCallback обрабатывает нажатия на Inline-кнопки (оставлено для масштабируемости)
 func (h *BotHandler) handleCallback(query *tgbotapi.CallbackQuery) {
-	// Подтверждаем получение коллбека, чтобы часики на кнопке перестали крутиться
 	callback := tgbotapi.NewCallback(query.ID, "")
 	h.bot.Request(callback)
 }

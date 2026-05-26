@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
-// src/app/audit/AuditClient.tsx
+
 interface AuditRecord {
   ID: number;
   TelegramID: number;
@@ -23,10 +23,23 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
   const [selectedRecord, setSelectedRecord] = useState<AuditRecord | null>(
     initialRecords.length > 0 ? initialRecords[0] : null
   );
+  
+  // Флаг монтирования для предотвращения Hydration Mismatch из-за временных зон
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  // Синхронизируем состояние, если данные обновятся на сервере (например, через SSE)
+  useEffect(() => {
+    setRecords(initialRecords);
+    if (initialRecords.length > 0 && !selectedRecord) {
+      setSelectedRecord(initialRecords[0]);
+    }
+  }, [initialRecords, selectedRecord]);
 
   const handleExport = () => {
-    // Теперь браузер обращается к твоему Next.js серверу, 
-    // а тот уже скачивает файл из Go-бэкенда с нужным API-ключом
     window.location.href = '/api/download';
   };
 
@@ -42,9 +55,9 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
   };
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col min-h-screen bg-gray-50">
       {/* Шапка */}
-      <header className="sticky top-0 z-50 flex justify-between items-center px-8 h-16 w-full bg-white/70 backdrop-blur-md border-b border-gray-200">
+      <header className="sticky top-0 z-50 flex justify-between items-center px-8 h-16 w-full bg-white/80 backdrop-blur-md border-b border-gray-200">
         <h2 className="font-bold text-[#182442] text-xl">Панель управления</h2>
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden border-2 border-white">
@@ -69,7 +82,7 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
         </div>
 
         {records.length === 0 ? (
-          <div className="flex items-center justify-center h-64">
+          <div className="flex items-center justify-center h-64 bg-white rounded-[24px] border border-gray-200 shadow-sm">
             <p className="text-gray-500 text-lg">Нет данных для отображения</p>
           </div>
         ) : (
@@ -98,10 +111,10 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
                         <td className="py-4 px-6 relative">
                           {isActive && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#296956] rounded-r-full"></div>}
                           <div className="font-medium text-gray-900">
-                            {format(new Date(record.CreatedAt), 'dd MMM yyyy', { locale: ru })}
+                            {isMounted ? format(new Date(record.CreatedAt), 'dd MMM yyyy', { locale: ru }) : 'Загрузка...'}
                           </div>
                           <div className="text-sm text-gray-500">
-                            {format(new Date(record.CreatedAt), 'HH:mm')}
+                            {isMounted ? format(new Date(record.CreatedAt), 'HH:mm') : ''}
                           </div>
                         </td>
                         <td className="py-4 px-6 text-gray-800">{record.BIN}</td>
@@ -142,12 +155,14 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
 
                 <div>
                   <h3 className="font-bold text-[#182442] mb-2">Оценка аудитора</h3>
-                  <div className="inline-block px-4 py-2 rounded-full text-lg font-bold"
+                  <div className="inline-block px-4 py-2 rounded-full text-lg font-bold shadow-sm border"
                     style={{
                       backgroundColor: selectedRecord.Score >= 4 ? '#aff0d8' :
-                                      selectedRecord.Score >= 3 ? '#bac6ec' : '#ffb4a9',
+                                       selectedRecord.Score >= 3 ? '#bac6ec' : '#ffb4a9',
                       color: selectedRecord.Score >= 4 ? '#296956' :
-                             selectedRecord.Score >= 3 ? '#182442' : '#c41c1c'
+                             selectedRecord.Score >= 3 ? '#182442' : '#c41c1c',
+                      borderColor: selectedRecord.Score >= 4 ? '#8ee2c3' :
+                                   selectedRecord.Score >= 3 ? '#95a7d9' : '#f09689'
                     }}
                   >
                     {selectedRecord.Score.toFixed(1)} / 5.0
@@ -156,11 +171,11 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
 
                 <div>
                   <h3 className="font-bold text-[#182442] mb-2">Ответы</h3>
-                  <div className="bg-white p-4 rounded-xl border border-gray-200 space-y-3">
+                  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                     {Object.entries(getParsedAnswers(selectedRecord.Answers)).map(([key, value]) => (
                       <div key={key} className="text-sm">
                         <p className="text-gray-500 text-xs uppercase">{key}</p>
-                        <p className="text-gray-900 font-medium">{String(value)}</p>
+                        <p className="text-gray-900 font-medium mt-1">{String(value)}</p>
                       </div>
                     ))}
                   </div>
