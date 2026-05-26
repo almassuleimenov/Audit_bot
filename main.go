@@ -194,6 +194,10 @@ func main() {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}))
 
+	// НОВЫЕ РОУТЫ ДЛЯ РЕДАКТИРОВАНИЯ И УДАЛЕНИЯ ВОПРОСОВ
+	mux.Handle("PUT /api/questions/{id}", protectJWT(UpdateQuestionHandler(repo)))
+	mux.Handle("DELETE /api/questions/{id}", protectJWT(DeleteQuestionHandler(repo)))
+
 	mux.Handle("/api/export", protectJWT(func(w http.ResponseWriter, r *http.Request) {
 		var records []repository.AuditRecord
 		if err := db.Order("created_at desc").Find(&records).Error; err != nil {
@@ -404,4 +408,67 @@ func main() {
 	}
 
 	log.Println("[INFO] System shutdown complete. Safe to exit.")
+}
+
+// ==========================================
+// CRUD Эндпоинты для управления вопросами (SRE)
+// ==========================================
+
+// UpdateQuestionHandler обновляет текст существующего вопроса
+// Обрати внимание: принимает интерфейс repository.BotRepository
+func UpdateQuestionHandler(repo repository.BotRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.PathValue("id")
+		id, err := strconv.ParseUint(idStr, 10, 32)
+		if err != nil || id == 0 {
+			http.Error(w, `{"error":"Invalid question ID"}`, http.StatusBadRequest)
+			return
+		}
+
+		var payload struct {
+			Text string `json:"text"`
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Text == "" {
+			http.Error(w, `{"error":"Invalid payload: text is required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Вызываем метод интерфейса (убедись, что он добавлен в repository.go)
+		err = repo.UpdateQuestion(context.Background(), uint(id), payload.Text, payload.Type)
+		if err != nil {
+			log.Printf("[ERROR] Failed to update question %d: %v", id, err)
+			http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success", "message":"Question updated"}`))
+	}
+}
+
+// DeleteQuestionHandler удаляет вопрос из базы
+// Обрати внимание: принимает интерфейс repository.BotRepository
+func DeleteQuestionHandler(repo repository.BotRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.PathValue("id")
+		id, err := strconv.ParseUint(idStr, 10, 32)
+		if err != nil || id == 0 {
+			http.Error(w, `{"error":"Invalid question ID"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Вызываем метод интерфейса (убедись, что он добавлен в repository.go)
+		err = repo.DeleteQuestion(context.Background(), uint(id))
+		if err != nil {
+			log.Printf("[ERROR] Failed to delete question %d: %v", id, err)
+			http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success", "message":"Question deleted"}`))
+	}
 }

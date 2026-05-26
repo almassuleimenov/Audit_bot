@@ -1,5 +1,5 @@
 package repository
-//D:\Project\backend_projects\audit_bot\repository\repository.go
+
 import (
 	"context"
 	"encoding/json"
@@ -21,8 +21,11 @@ type BotRepository interface {
 	GetAllQuestions(ctx context.Context) ([]SurveyQuestion, error)
 	SaveQuestion(ctx context.Context, q *SurveyQuestion) error
 	SeedDefaultQuestions(ctx context.Context) error
+	UpdateQuestion(ctx context.Context, id uint, text string, qType string) error
+	DeleteQuestion(ctx context.Context, id uint) error
 }
 
+// Изменили название структуры с botRepo на botRepositoryImpl, чтобы везде было единообразно
 type botRepositoryImpl struct {
 	db *gorm.DB
 }
@@ -89,7 +92,7 @@ func (r *botRepositoryImpl) SaveQuestion(ctx context.Context, q *SurveyQuestion)
 func (r *botRepositoryImpl) SeedDefaultQuestions(ctx context.Context) error {
 	var count int64
 	r.db.Model(&SurveyQuestion{}).Count(&count)
-	
+
 	if count > 0 {
 		return nil // Вопросы уже есть, ничего не делаем
 	}
@@ -137,4 +140,20 @@ func (r *botRepositoryImpl) SeedDefaultQuestions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// Привязали методы к правильной структуре botRepositoryImpl
+func (r *botRepositoryImpl) UpdateQuestion(ctx context.Context, id uint, text string, qType string) error {
+	return r.db.WithContext(ctx).Model(&SurveyQuestion{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"text_ru": text,
+			"text_kk": text,
+			"type":    qType,
+		}).Error
+}
+
+// DeleteQuestion удаляет вопрос из базы данных по его ID
+func (r *botRepositoryImpl) DeleteQuestion(ctx context.Context, id uint) error {
+	return r.db.WithContext(ctx).Delete(&SurveyQuestion{}, id).Error
 }
