@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/almassuleimenov/Audit_bot/internal/sse"
 	"github.com/almassuleimenov/Audit_bot/repository"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type State int
@@ -25,7 +25,7 @@ const (
 )
 
 type Session struct {
-	mu            sync.Mutex // Блокировка состояния конкретной сессии для защиты map и полей
+	mu            sync.Mutex // Блокировка состояния конкретной сессии
 	ChatID        int64
 	State         State
 	BIN           string
@@ -35,6 +35,18 @@ type Session struct {
 	CurrentQIndex int
 	Answers       map[string]string
 	Score         int
+}
+
+// Reset зануляет состояние FSM за O(1).
+// Избавляет от необходимости удалять структуру из глобальной map и дергать RW мьютексы.
+func (s *Session) Reset() {
+	s.State = StateIdle
+	s.BIN = ""
+	s.Position = ""
+	s.Questions = nil
+	s.CurrentQIndex = 0
+	s.Answers = make(map[string]string)
+	s.Score = 0
 }
 
 type BotHandler struct {
@@ -66,7 +78,6 @@ func (h *BotHandler) getSession(chatID int64) *Session {
 	if !exists {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		// Двойная проверка на случай, если другая горутина уже создала сессию
 		session, exists = h.sessions[chatID]
 		if !exists {
 			session = &Session{
@@ -81,10 +92,18 @@ func (h *BotHandler) getSession(chatID int64) *Session {
 	return session
 }
 
-func (h *BotHandler) clearSession(chatID int64) {
-	h.mu.Lock()
-	delete(h.sessions, chatID)
-	h.mu.Unlock()
+// sendMainMenu возвращает пользователя в начальную точку FSM
+func (h *BotHandler) sendMainMenu(chatID int64) {
+	text := "Вас приветствует Чат-бот Департамента внутреннего государственного аудита.\n\nВыберите действие:"
+	msg := tgbotapi.NewMessage(chatID, text)
+
+	btn := tgbotapi.NewKeyboardButton("/audit")
+	row := []tgbotapi.KeyboardButton{btn}
+	keyboard := tgbotapi.NewReplyKeyboard(row)
+	keyboard.ResizeKeyboard = true
+	msg.ReplyMarkup = keyboard
+
+	h.bot.Send(msg)
 }
 
 func (h *BotHandler) Start() {
@@ -94,7 +113,7 @@ func (h *BotHandler) Start() {
 	updates := h.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		// Асинхронная обработка O(1) диспетчеризация
+		// Асинхронная O(1) диспетчеризация
 		if update.Message != nil {
 			go h.handleMessage(update.Message)
 		} else if update.CallbackQuery != nil {
@@ -108,33 +127,21 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	text := msg.Text
 
 	session := h.getSession(chatID)
-	
-	// Блокируем конкретную сессию на время обработки сообщения.
-	// Защищает от спама и Data Races внутри State Machine.
+
+	// Захватываем контроль над сессией на время обработки команды
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
-			// Так как мы внутри лока сессии, вызываем очистку пула безопасно 
-			// (в clearSession свой лок на мапу sessions)
-			h.clearSession(chatID)
-			reply := tgbotapi.NewMessage(chatID, "Добро пожаловать в систему аудита! Отправьте команду /audit для начала проверки.")
-			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-			h.bot.Send(reply)
+			session.Reset()
+			h.sendMainMenu(chatID)
 			return
 		case "audit":
-			h.clearSession(chatID)
-			
-			// Мы очистили сессию в мапе, но текущая горутина все еще держит мьютекс старого объекта session.
-			// Необходимо отпустить его и получить новый.
-			session.mu.Unlock()
-			session = h.getSession(chatID)
-			session.mu.Lock()
-			
+			session.Reset()
 			session.State = StateWaitingBIN
-			
+
 			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, введите БИН вашей организации (12 цифр):")
 			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 			h.bot.Send(reply)
@@ -144,30 +151,40 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 
 	switch session.State {
 	case StateWaitingBIN:
+		// Базовая пре-валидация
+		if len(text) != 12 {
+			reply := tgbotapi.NewMessage(chatID, "БИН должен состоять из 12 символов. Попробуйте снова:")
+			h.bot.Send(reply)
+			return
+		}
+
 		session.BIN = text
 		session.State = StateWaitingPosition
-		msg := tgbotapi.NewMessage(chatID, "Отлично. Теперь укажите вашу должность:")
-		h.bot.Send(msg)
+		reply := tgbotapi.NewMessage(chatID, "Отлично. Теперь укажите вашу должность:")
+		h.bot.Send(reply)
 
 	case StateWaitingPosition:
 		session.Position = text
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		
+
 		questions, err := h.repo.GetActiveQuestions(ctx)
 		if err != nil || len(questions) == 0 {
 			log.Printf("[ERROR] Failed to fetch active questions: %v", err)
-			msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при загрузке вопросов или вопросы отсутствуют. Попробуйте позже.")
-			h.bot.Send(msg)
-			h.clearSession(chatID)
+			reply := tgbotapi.NewMessage(chatID, "Произошла ошибка при загрузке вопросов или они отсутствуют. Попробуйте позже.")
+			h.bot.Send(reply)
+			
+			// Возврат в меню при системной ошибке
+			session.Reset()
+			h.sendMainMenu(chatID)
 			return
 		}
 
 		session.Questions = questions
 		session.CurrentQIndex = 0
 		session.State = StateSurveyDynamic
-		
+
 		h.askCurrentQuestion(session)
 
 	case StateSurveyDynamic:
@@ -179,8 +196,8 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			h.askCurrentQuestion(session)
 		} else {
 			session.State = StateWaitingScore
-			
-			msg := tgbotapi.NewMessage(chatID, "Опрос завершен! Оцените работу аудиторов по 5-балльной шкале (где 5 - отлично, 1 - очень плохо):")
+
+			reply := tgbotapi.NewMessage(chatID, "Анкета завершена. Оцените работу аудиторов по 5-балльной шкале (где 5 - отлично, 1 - очень плохо):")
 			row := []tgbotapi.KeyboardButton{
 				tgbotapi.NewKeyboardButton("1"),
 				tgbotapi.NewKeyboardButton("2"),
@@ -188,53 +205,63 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 				tgbotapi.NewKeyboardButton("4"),
 				tgbotapi.NewKeyboardButton("5"),
 			}
-			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(row)
-			h.bot.Send(msg)
+			keyboard := tgbotapi.NewReplyKeyboard(row)
+			keyboard.ResizeKeyboard = true
+			reply.ReplyMarkup = keyboard
+			h.bot.Send(reply)
 		}
 
 	case StateWaitingScore:
 		score, err := strconv.Atoi(text)
 		if err != nil || score < 1 || score > 5 {
-			msg := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите число от 1 до 5 на клавиатуре.")
-			h.bot.Send(msg)
+			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите число от 1 до 5 на клавиатуре.")
+			h.bot.Send(reply)
 			return
 		}
-		
+
 		session.Score = score
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		
+
 		err = h.repo.SaveAuditRecord(ctx, chatID, session.BIN, session.Position, session.Answers, session.Score)
 		if err != nil {
 			log.Printf("[ERROR] Failed to save audit record: %v", err)
-			msg := tgbotapi.NewMessage(chatID, "Произошла системная ошибка при сохранении данных. Обратитесь в поддержку.")
-			h.bot.Send(msg)
-			h.clearSession(chatID)
+			reply := tgbotapi.NewMessage(chatID, "Произошла системная ошибка при сохранении данных. Обратитесь в поддержку.")
+			h.bot.Send(reply)
+			session.Reset()
+			h.sendMainMenu(chatID)
 			return
 		}
 
-		msg := tgbotapi.NewMessage(chatID, "Спасибо за уделенное время! Ваши ответы успешно сохранены и помогут нам улучшить качество работы.")
-		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-		h.bot.Send(msg)
+		reply := tgbotapi.NewMessage(chatID, "Спасибо за уделенное время! Ваши ответы успешно сохранены и помогут нам улучшить качество работы.")
+		reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+		h.bot.Send(reply)
 
 		notification := fmt.Sprintf("Новый аудит завершен! БИН: %s, Оценка: %d", session.BIN, session.Score)
-		h.leadBroker.Notifier <- []byte(notification)
+		// Неблокирующая отправка в канал
+		select {
+		case h.leadBroker.Notifier <- []byte(notification):
+		default:
+			log.Println("[WARNING] SSE Notifier channel is full, skipping broadcast")
+		}
 
-		h.clearSession(chatID)
+		// Замыкание FSM: Сбрасываем контекст и выдаем главное меню
+		session.Reset()
+		h.sendMainMenu(chatID)
 
 	default:
-		msg := tgbotapi.NewMessage(chatID, "Я вас не понимаю. Отправьте /audit, чтобы начать.")
-		msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-		h.bot.Send(msg)
+		// Fallback если стейт пуст, а юзер прислал рандомный текст
+		session.Reset()
+		h.sendMainMenu(chatID)
 	}
 }
 
 func (h *BotHandler) askCurrentQuestion(session *Session) {
 	q := session.Questions[session.CurrentQIndex]
-	qText := q.TextRU
+	qText := fmt.Sprintf("%d. %s", session.CurrentQIndex+1, q.TextRU)
 	var options []string
-	
+
 	err := json.Unmarshal(q.OptionsRU, &options)
 	if err != nil {
 		log.Printf("[WARNING] Не удалось распарсить варианты ответов для вопроса ID %d. Используем стандартные.", q.ID)
@@ -246,9 +273,9 @@ func (h *BotHandler) askCurrentQuestion(session *Session) {
 	for _, opt := range options {
 		row = append(row, tgbotapi.NewKeyboardButton(opt))
 	}
-	
+
 	keyboard := tgbotapi.NewReplyKeyboard(row)
-	keyboard.OneTimeKeyboard = true 
+	keyboard.OneTimeKeyboard = true
 	keyboard.ResizeKeyboard = true
 	msg.ReplyMarkup = keyboard
 
