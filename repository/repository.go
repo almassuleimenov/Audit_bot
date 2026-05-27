@@ -1,5 +1,5 @@
 package repository
-//D:\Project\backend_projects\audit_bot\repository\repository.go
+
 import (
 	"context"
 	"encoding/json"
@@ -11,7 +11,8 @@ import (
 )
 
 type BotRepository interface {
-	SaveAuditRecord(ctx context.Context, chatID int64, bin string, position string, answers map[string]string, score int) error
+	// 1. Добавляем phone string в интерфейс
+	SaveAuditRecord(ctx context.Context, chatID int64, phone string, bin string, position string, answers map[string]string, score int) error
 	SaveAppointment(ctx context.Context, chatID int64, target string, fullName string, phone string, question string) error
 	GetAuditRecords(ctx context.Context, limit int, offset int) ([]AuditRecord, error)
 	GetAppointments(ctx context.Context, limit int, offset int) ([]Appointment, error)
@@ -25,7 +26,6 @@ type BotRepository interface {
 	DeleteQuestion(ctx context.Context, id uint) error
 }
 
-// Изменили название структуры с botRepo на botRepositoryImpl, чтобы везде было единообразно
 type botRepositoryImpl struct {
 	db *gorm.DB
 }
@@ -34,17 +34,20 @@ func NewBotRepository(db *gorm.DB) BotRepository {
 	return &botRepositoryImpl{db: db}
 }
 
-func (r *botRepositoryImpl) SaveAuditRecord(ctx context.Context, chatID int64, bin string, position string, answers map[string]string, score int) error {
+// 2. Обновляем сигнатуру функции (добавляем phone string)
+func (r *botRepositoryImpl) SaveAuditRecord(ctx context.Context, chatID int64, phone string, bin string, position string, answers map[string]string, score int) error {
 	answersBytes, err := json.Marshal(answers)
 	if err != nil {
 		return fmt.Errorf("failed to marshal answers: %w", err)
 	}
+	
 	record := &AuditRecord{
-		TelegramID: chatID,
-		BIN:        bin,
-		Position:   position,
-		Answers:    datatypes.JSON(answersBytes),
-		Score:      score,
+		TelegramID:  chatID,
+		PhoneNumber: phone, // 3. Привязываем полученный телефон к полю в БД
+		BIN:         bin,
+		Position:    position,
+		Answers:     datatypes.JSON(answersBytes),
+		Score:       score,
 	}
 	return r.db.WithContext(ctx).Create(record).Error
 }
@@ -142,7 +145,6 @@ func (r *botRepositoryImpl) SeedDefaultQuestions(ctx context.Context) error {
 	return nil
 }
 
-// Привязали методы к правильной структуре botRepositoryImpl
 func (r *botRepositoryImpl) UpdateQuestion(ctx context.Context, id uint, text string, qType string) error {
 	return r.db.WithContext(ctx).Model(&SurveyQuestion{}).
 		Where("id = ?", id).
@@ -153,7 +155,6 @@ func (r *botRepositoryImpl) UpdateQuestion(ctx context.Context, id uint, text st
 		}).Error
 }
 
-// DeleteQuestion удаляет вопрос из базы данных по его ID
 func (r *botRepositoryImpl) DeleteQuestion(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&SurveyQuestion{}, id).Error
 }

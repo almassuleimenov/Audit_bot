@@ -1,5 +1,5 @@
 package bot
-
+//D:\Project\backend_projects\audit_bot\bot\fsm.go
 import (
 	"context"
 	"encoding/json"
@@ -18,6 +18,7 @@ type State int
 
 const (
 	StateIdle State = iota
+	StateWaitingPhone
 	StateWaitingBIN
 	StateWaitingPosition
 	StateSurveyDynamic
@@ -25,9 +26,10 @@ const (
 )
 
 type Session struct {
-	mu            sync.Mutex // Блокировка состояния конкретной сессии
+	mu            sync.Mutex
 	ChatID        int64
 	State         State
+	PhoneNumber   string
 	BIN           string
 	Position      string
 	Language      string
@@ -37,10 +39,9 @@ type Session struct {
 	Score         int
 }
 
-// Reset зануляет состояние FSM за O(1).
-// Избавляет от необходимости удалять структуру из глобальной map и дергать RW мьютексы.
 func (s *Session) Reset() {
 	s.State = StateIdle
+	s.PhoneNumber = ""
 	s.BIN = ""
 	s.Position = ""
 	s.Questions = nil
@@ -55,7 +56,7 @@ type BotHandler struct {
 	adminID    int64
 	leadBroker *sse.Broker
 
-	mu       sync.RWMutex // Блокировка только для пула сессий
+	mu       sync.RWMutex
 	sessions map[int64]*Session
 }
 
@@ -69,7 +70,6 @@ func NewBotHandler(bot *tgbotapi.BotAPI, repo repository.BotRepository, adminID 
 	}
 }
 
-// getSession использует паттерн Double-Checked Locking
 func (h *BotHandler) getSession(chatID int64) *Session {
 	h.mu.RLock()
 	session, exists := h.sessions[chatID]
@@ -92,7 +92,6 @@ func (h *BotHandler) getSession(chatID int64) *Session {
 	return session
 }
 
-// sendMainMenu возвращает пользователя в начальную точку FSM
 func (h *BotHandler) sendMainMenu(chatID int64) {
 	text := "Вас приветствует Чат-бот Департамента внутреннего государственного аудита.\n\nВыберите действие:"
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -113,7 +112,6 @@ func (h *BotHandler) Start() {
 	updates := h.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		// Асинхронная O(1) диспетчеризация
 		if update.Message != nil {
 			go h.handleMessage(update.Message)
 		} else if update.CallbackQuery != nil {
@@ -124,14 +122,12 @@ func (h *BotHandler) Start() {
 
 func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
-	text := msg.Text
-
 	session := h.getSession(chatID)
 
-	// Захватываем контроль над сессией на время обработки команды
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
+	// Обработка базовых команд
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
@@ -140,20 +136,44 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			return
 		case "audit":
 			session.Reset()
-			session.State = StateWaitingBIN
-
-			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, введите БИН вашей организации (12 цифр):")
-			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+			session.State = StateWaitingPhone
+			
+			// Запрос контакта (предотвращает фейковые номера)
+			reply := tgbotapi.NewMessage(chatID, "Для начала аудита необходимо подтвердить вашу личность. Пожалуйста, отправьте ваш номер телефона, нажав на кнопку ниже:")
+			btn := tgbotapi.NewKeyboardButtonContact("📱 Отправить контакт")
+			reply.ReplyMarkup = tgbotapi.NewReplyKeyboard([]tgbotapi.KeyboardButton{btn})
 			h.bot.Send(reply)
 			return
 		}
 	}
 
+	// Отдельная обработка контакта, так как текст при этом пустой
+	if session.State == StateWaitingPhone {
+		if msg.Contact != nil {
+			session.PhoneNumber = msg.Contact.PhoneNumber
+			session.State = StateWaitingBIN
+
+			reply := tgbotapi.NewMessage(chatID, "Контакт успешно подтвержден. Теперь введите БИН вашей организации (12 цифр):")
+			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+			h.bot.Send(reply)
+			return
+		}
+		
+		reply := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте кнопку '📱 Отправить контакт' для продолжения.")
+		h.bot.Send(reply)
+		return
+	}
+
+	// Для всех остальных стейтов ожидаем текстовый ввод
+	text := msg.Text
+	if text == "" {
+		return
+	}
+
 	switch session.State {
 	case StateWaitingBIN:
-		// Базовая пре-валидация
 		if len(text) != 12 {
-			reply := tgbotapi.NewMessage(chatID, "БИН должен состоять из 12 символов. Попробуйте снова:")
+			reply := tgbotapi.NewMessage(chatID, "БИН должен состоять ровно из 12 символов. Попробуйте снова:")
 			h.bot.Send(reply)
 			return
 		}
@@ -166,6 +186,7 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	case StateWaitingPosition:
 		session.Position = text
 
+		// Динамическая загрузка вопросов из БД (O(1) по индексу is_active)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -174,8 +195,6 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			log.Printf("[ERROR] Failed to fetch active questions: %v", err)
 			reply := tgbotapi.NewMessage(chatID, "Произошла ошибка при загрузке вопросов или они отсутствуют. Попробуйте позже.")
 			h.bot.Send(reply)
-			
-			// Возврат в меню при системной ошибке
 			session.Reset()
 			h.sendMainMenu(chatID)
 			return
@@ -224,7 +243,8 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		err = h.repo.SaveAuditRecord(ctx, chatID, session.BIN, session.Position, session.Answers, session.Score)
+		// ПРИМЕЧАНИЕ: Тебе нужно убедиться, что метод SaveAuditRecord в repository.go принимает параметр session.PhoneNumber
+		err = h.repo.SaveAuditRecord(ctx, chatID, session.PhoneNumber, session.BIN, session.Position, session.Answers, session.Score)
 		if err != nil {
 			log.Printf("[ERROR] Failed to save audit record: %v", err)
 			reply := tgbotapi.NewMessage(chatID, "Произошла системная ошибка при сохранении данных. Обратитесь в поддержку.")
@@ -238,20 +258,17 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 		h.bot.Send(reply)
 
-		notification := fmt.Sprintf("Новый аудит завершен! БИН: %s, Оценка: %d", session.BIN, session.Score)
-		// Неблокирующая отправка в канал
+		notification := fmt.Sprintf("Новый аудит! Телефон: %s, БИН: %s, Оценка: %d", session.PhoneNumber, session.BIN, session.Score)
 		select {
 		case h.leadBroker.Notifier <- []byte(notification):
 		default:
-			log.Println("[WARNING] SSE Notifier channel is full, skipping broadcast")
+			log.Println("[WARNING] SSE channel is full")
 		}
 
-		// Замыкание FSM: Сбрасываем контекст и выдаем главное меню
 		session.Reset()
 		h.sendMainMenu(chatID)
 
 	default:
-		// Fallback если стейт пуст, а юзер прислал рандомный текст
 		session.Reset()
 		h.sendMainMenu(chatID)
 	}
@@ -264,7 +281,7 @@ func (h *BotHandler) askCurrentQuestion(session *Session) {
 
 	err := json.Unmarshal(q.OptionsRU, &options)
 	if err != nil {
-		log.Printf("[WARNING] Не удалось распарсить варианты ответов для вопроса ID %d. Используем стандартные.", q.ID)
+		log.Printf("[WARNING] Не удалось распарсить варианты ответов для вопроса ID %d", q.ID)
 		options = []string{"Да", "Нет"}
 	}
 

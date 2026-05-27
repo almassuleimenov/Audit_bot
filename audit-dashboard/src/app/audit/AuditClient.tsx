@@ -7,6 +7,7 @@ import { ru } from 'date-fns/locale';
 interface AuditRecord {
   ID: number;
   TelegramID: number;
+  PhoneNumber: string;
   BIN: string;
   Position: string;
   Answers: string | Record<string, string>;
@@ -24,14 +25,12 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
     initialRecords.length > 0 ? initialRecords[0] : null
   );
   
-  // Флаг монтирования для предотвращения Hydration Mismatch из-за временных зон
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
     setIsMounted(true);
   }, []);
 
-  // Синхронизируем состояние, если данные обновятся на сервере (например, через SSE)
   useEffect(() => {
     setRecords(initialRecords);
     if (initialRecords.length > 0 && !selectedRecord) {
@@ -56,7 +55,6 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
-      {/* Шапка */}
       <header className="sticky top-0 z-50 flex justify-between items-center px-8 h-16 w-full bg-white/80 backdrop-blur-md border-b border-gray-200">
         <h2 className="font-bold text-[#182442] text-xl">Панель управления</h2>
         <div className="flex items-center gap-4">
@@ -66,7 +64,6 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
         </div>
       </header>
 
-      {/* Контент страницы */}
       <div className="p-8 flex-1 flex flex-col gap-6 max-w-7xl mx-auto w-full">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-4">
           <div>
@@ -94,8 +91,8 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
                 <thead className="sticky top-0 bg-gray-50 z-10">
                   <tr className="border-b border-gray-200">
                     <th className="py-4 px-6 text-gray-500 font-medium">Дата и время</th>
+                    <th className="py-4 px-6 text-gray-500 font-medium">Телефон</th>
                     <th className="py-4 px-6 text-gray-500 font-medium">БИН организации</th>
-                    <th className="py-4 px-6 text-gray-500 font-medium">Должность</th>
                     <th className="py-4 px-6 text-gray-500 font-medium text-center">Оценка</th>
                   </tr>
                 </thead>
@@ -117,8 +114,8 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
                             {isMounted ? format(new Date(record.CreatedAt), 'HH:mm') : ''}
                           </div>
                         </td>
+                        <td className="py-4 px-6 text-gray-800 font-medium">{record.PhoneNumber || '—'}</td>
                         <td className="py-4 px-6 text-gray-800">{record.BIN}</td>
-                        <td className="py-4 px-6 text-gray-800">{record.Position}</td>
                         <td className="py-4 px-6 text-center">
                           <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
                             record.Score >= 4 ? 'bg-[#aff0d8] text-[#296956]' :
@@ -138,44 +135,45 @@ export default function AuditClient({ initialRecords }: AuditClientProps) {
             {/* Правая часть: Детали */}
             {selectedRecord && (
               <div className="w-full xl:w-1/3 p-6 overflow-y-auto flex flex-col gap-6 bg-gray-50">
-                <div>
-                  <h3 className="font-bold text-[#182442] mb-2">ID записи</h3>
-                  <p className="text-gray-700 font-mono text-sm">{selectedRecord.ID}</p>
+                <div className="flex justify-between items-center">
+                    <div>
+                    <h3 className="font-bold text-[#182442] mb-1">ID записи</h3>
+                    <p className="text-gray-700 font-mono text-sm">#{selectedRecord.ID}</p>
+                    </div>
+                    <div className="inline-block px-4 py-2 rounded-full text-lg font-bold shadow-sm border"
+                        style={{
+                        backgroundColor: selectedRecord.Score >= 4 ? '#aff0d8' : selectedRecord.Score >= 3 ? '#bac6ec' : '#ffb4a9',
+                        color: selectedRecord.Score >= 4 ? '#296956' : selectedRecord.Score >= 3 ? '#182442' : '#c41c1c',
+                        borderColor: selectedRecord.Score >= 4 ? '#8ee2c3' : selectedRecord.Score >= 3 ? '#95a7d9' : '#f09689'
+                        }}
+                    >
+                        {selectedRecord.Score.toFixed(1)} / 5.0
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                        <h3 className="font-bold text-[#182442] text-xs uppercase mb-1">Телефон</h3>
+                        <p className="text-gray-900 font-medium">{selectedRecord.PhoneNumber || 'Не указан'}</p>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                        <h3 className="font-bold text-[#182442] text-xs uppercase mb-1">БИН организации</h3>
+                        <p className="text-gray-900 font-medium">{selectedRecord.BIN}</p>
+                    </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                  <h3 className="font-bold text-[#182442] text-xs uppercase mb-1">Должность</h3>
+                  <p className="text-gray-900 font-medium">{selectedRecord.Position}</p>
                 </div>
 
                 <div>
-                  <h3 className="font-bold text-[#182442] mb-2">БИН организации</h3>
-                  <p className="text-gray-700">{selectedRecord.BIN}</p>
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-[#182442] mb-2">Должность</h3>
-                  <p className="text-gray-700">{selectedRecord.Position}</p>
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-[#182442] mb-2">Оценка аудитора</h3>
-                  <div className="inline-block px-4 py-2 rounded-full text-lg font-bold shadow-sm border"
-                    style={{
-                      backgroundColor: selectedRecord.Score >= 4 ? '#aff0d8' :
-                                       selectedRecord.Score >= 3 ? '#bac6ec' : '#ffb4a9',
-                      color: selectedRecord.Score >= 4 ? '#296956' :
-                             selectedRecord.Score >= 3 ? '#182442' : '#c41c1c',
-                      borderColor: selectedRecord.Score >= 4 ? '#8ee2c3' :
-                                   selectedRecord.Score >= 3 ? '#95a7d9' : '#f09689'
-                    }}
-                  >
-                    {selectedRecord.Score.toFixed(1)} / 5.0
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-[#182442] mb-2">Ответы</h3>
-                  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
+                  <h3 className="font-bold text-[#182442] mb-2">Ответы клиента</h3>
+                  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-4">
                     {Object.entries(getParsedAnswers(selectedRecord.Answers)).map(([key, value]) => (
-                      <div key={key} className="text-sm">
-                        <p className="text-gray-500 text-xs uppercase">{key}</p>
-                        <p className="text-gray-900 font-medium mt-1">{String(value)}</p>
+                      <div key={key} className="text-sm pb-3 border-b border-gray-100 last:border-0 last:pb-0">
+                        <p className="text-gray-500 text-xs uppercase mb-1">{key}</p>
+                        <p className="text-gray-900 font-medium">{String(value)}</p>
                       </div>
                     ))}
                   </div>

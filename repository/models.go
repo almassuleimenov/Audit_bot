@@ -1,5 +1,5 @@
 package repository
-//D:\Project\backend_projects\audit_bot\repository\models.go
+
 import (
 	"time"
 	"gorm.io/datatypes"
@@ -7,13 +7,14 @@ import (
 
 // AuditRecord представляет таблицу для хранения результатов анкетирования.
 type AuditRecord struct {
-	ID         uint           `gorm:"primaryKey"`
-	TelegramID int64          `gorm:"index;not null;comment:ID пользователя в Telegram"`
-	BIN        string         `gorm:"type:varchar(12);not null;comment:БИН организации"`
-	Position   string         `gorm:"type:varchar(255);not null;comment:Должность сотрудника"`
-	Answers    datatypes.JSON `gorm:"type:jsonb;not null;comment:JSON с ответами на вопросы"`
-	Score      int            `gorm:"not null;comment:Оценка от 1 до 5"`
-	CreatedAt  time.Time      `gorm:"autoCreateTime;index"`
+	ID          uint           `gorm:"primaryKey"`
+	TelegramID  int64          `gorm:"index;not null;comment:ID пользователя в Telegram"`
+	PhoneNumber string         `gorm:"type:varchar(20);not null;comment:Верифицированный номер телефона"`
+	BIN         string         `gorm:"type:varchar(12);not null;comment:БИН организации"`
+	Position    string         `gorm:"type:varchar(255);not null;comment:Должность сотрудника"`
+	Answers     datatypes.JSON `gorm:"type:jsonb;not null;comment:JSON с ответами на вопросы"`
+	Score       int            `gorm:"not null;comment:Оценка от 1 до 5"`
+	CreatedAt   time.Time      `gorm:"autoCreateTime;index"`
 }
 
 // Appointment представляет таблицу для записи на онлайн-прием.
@@ -27,7 +28,8 @@ type Appointment struct {
 	CreatedAt     time.Time `gorm:"autoCreateTime;index"`
 }
 
-// SurveyQuestion представляет динамический вопрос анкеты с вариантами ответов
+// SurveyQuestion представляет динамический вопрос анкеты с вариантами ответов.
+// Фронтенд должен через API обновлять именно эту таблицу, а бот будет читать её автоматически.
 type SurveyQuestion struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
 	TextRU    string         `gorm:"type:text;not null;comment:Вопрос на русском" json:"text_ru"`
