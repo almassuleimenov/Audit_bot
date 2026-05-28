@@ -24,6 +24,11 @@ const (
 	StateWaitingPosition
 	StateSurveyDynamic
 	StateWaitingScore
+
+	// Новые стейты для онлайн-приемной
+	StateAppointmentWaitingFIO
+	StateAppointmentWaitingQuestion
+	StateAppointmentWaitingPhone
 )
 
 type Session struct {
@@ -38,6 +43,11 @@ type Session struct {
 	CurrentQIndex int
 	Answers       map[string]string
 	Score         int
+
+	// Данные для записи на прием
+	AppointmentTarget   string
+	AppointmentFIO      string
+	AppointmentQuestion string
 }
 
 func (s *Session) Reset() {
@@ -49,6 +59,9 @@ func (s *Session) Reset() {
 	s.CurrentQIndex = 0
 	s.Answers = make(map[string]string)
 	s.Score = 0
+	s.AppointmentTarget = ""
+	s.AppointmentFIO = ""
+	s.AppointmentQuestion = ""
 }
 
 type BotHandler struct {
@@ -222,18 +235,34 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			h.startAuditFlow(session, chatID)
 			return
 		case "Онлайн-приемная", "Онлайн-қабылдау бөлмесі":
-			reply := tgbotapi.NewMessage(chatID, "Онлайн-приемная. Пожалуйста, обратитесь по телефону +7 (XXX) XXX-XX-XX.")
+			text := "График приёма граждан:"
 			if session.Language == "kk" {
-				reply.Text = "Онлайн-қабылдау бөлмесі. +7 (XXX) XXX-XX-XX телефонына хабарласыңыз."
+				text = "Азаматтарды қабылдау кестесі:"
 			}
-			h.bot.Send(reply)
+			msgOut := tgbotapi.NewMessage(chatID, text)
+
+			urlBtn := tgbotapi.NewInlineKeyboardButtonURL("График / Кесте", "https://www.gov.kz/memleket/entities/kvga/about/structure/departments/activity/4728/1?lang=ru")
+			btn1 := tgbotapi.NewInlineKeyboardButtonData("Қабдыраш Бауыржан Сағынжанұлы", "appointment_kabdrash")
+			btn2 := tgbotapi.NewInlineKeyboardButtonData("Мұсабек Азамат Мұсабекұлы", "appointment_musabek")
+			btn3 := tgbotapi.NewInlineKeyboardButtonData("Джумагулов Максат Батырбаевич", "appointment_jumagulov")
+
+			msgOut.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(urlBtn),
+				tgbotapi.NewInlineKeyboardRow(btn1),
+				tgbotapi.NewInlineKeyboardRow(btn2),
+				tgbotapi.NewInlineKeyboardRow(btn3),
+			)
+			h.bot.Send(msgOut)
 			return
 		case "Уполномоченный по этике", "Әдеп жөніндегі уәкіл":
-			reply := tgbotapi.NewMessage(chatID, "Уполномоченный по этике Департамента. Контактные данные: ...")
+			fileURL := "https://robochat.storage.yandexcloud.net/attachments/day/20284/421499/file/OLnAb2ZL/%D3%98%D0%B4%D0%B5%D0%BF%20%D0%B3%D1%80%D0%B0%D1%84%D0%B8%D0%BA.pdf"
+			caption := "Уполномоченный по этике Департамента"
 			if session.Language == "kk" {
-				reply.Text = "Департаменттің Әдеп жөніндегі уәкілі. Байланыс мәліметтері: ..."
+				caption = "Департаменттің Әдеп жөніндегі уәкілі"
 			}
-			h.bot.Send(reply)
+			fileMsg := tgbotapi.NewDocument(chatID, tgbotapi.FileURL(fileURL))
+			fileMsg.Caption = caption
+			h.bot.Send(fileMsg)
 			return
 		case "Пресс-центр", "Баспасөз орталығы":
 			reply := tgbotapi.NewMessage(chatID, "Новости Пресс-центра: https://www.gov.kz/memleket/entities/kvga/press")
@@ -387,6 +416,48 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		session.Reset()
 		h.sendMainMenu(chatID, session.Language)
 
+	case StateAppointmentWaitingFIO:
+		session.AppointmentFIO = text
+		session.State = StateAppointmentWaitingQuestion
+
+		msgText := "Характер вопроса кратко:"
+		if session.Language == "kk" {
+			msgText = "Сұрақтың қысқаша мәні:"
+		}
+		reply := tgbotapi.NewMessage(chatID, msgText)
+		h.bot.Send(reply)
+
+	case StateAppointmentWaitingQuestion:
+		session.AppointmentQuestion = text
+		session.State = StateAppointmentWaitingPhone
+
+		msgText := "Введите номер телефона для обратной связи:"
+		if session.Language == "kk" {
+			msgText = "Кері байланыс үшін телефон нөмірін енгізіңіз:"
+		}
+		reply := tgbotapi.NewMessage(chatID, msgText)
+		h.bot.Send(reply)
+
+	case StateAppointmentWaitingPhone:
+		phone := text
+
+		msgText := fmt.Sprintf("Вы записались на прием к руководителю %s ☑️", session.AppointmentTarget)
+		if session.Language == "kk" {
+			msgText = fmt.Sprintf("Сіз басшының қабылдауына жазылдыңыз %s ☑️", session.AppointmentTarget)
+		}
+		reply := tgbotapi.NewMessage(chatID, msgText)
+		h.bot.Send(reply)
+
+		notification := fmt.Sprintf("Запись на прием руководителю %s\n%s\n%s\n%s", session.AppointmentTarget, session.AppointmentFIO, session.AppointmentQuestion, phone)
+		select {
+		case h.leadBroker.Notifier <- []byte(notification):
+		default:
+			log.Println("[WARNING] SSE channel is full")
+		}
+
+		session.Reset()
+		h.sendMainMenu(chatID, session.Language)
+
 	default:
 		session.Reset()
 		h.sendMainMenu(chatID, session.Language)
@@ -453,4 +524,33 @@ func (h *BotHandler) askCurrentQuestion(session *Session) {
 func (h *BotHandler) handleCallback(query *tgbotapi.CallbackQuery) {
 	callback := tgbotapi.NewCallback(query.ID, "")
 	h.bot.Request(callback)
+
+	chatID := query.Message.Chat.ID
+	session := h.getSession(chatID)
+
+	targetManager := ""
+	switch query.Data {
+	case "appointment_kabdrash":
+		targetManager = "Қабдыраш Бауыржан Сағынжанұлы"
+	case "appointment_musabek":
+		targetManager = "Мұсабек Азамат Мұсабекұлы"
+	case "appointment_jumagulov":
+		targetManager = "Джумагулов Максат Батырбаевич"
+	}
+
+	if targetManager != "" {
+		session.mu.Lock()
+		session.AppointmentTarget = targetManager
+		session.State = StateAppointmentWaitingFIO
+		lang := session.Language
+		session.mu.Unlock()
+
+		msgText := "Укажите ваше ФИО:"
+		if lang == "kk" {
+			msgText = "Аты-жөніңізді көрсетіңіз:"
+		}
+
+		reply := tgbotapi.NewMessage(chatID, msgText)
+		h.bot.Send(reply)
+	}
 }
