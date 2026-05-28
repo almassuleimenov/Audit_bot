@@ -22,7 +22,7 @@ type BotRepository interface {
 	GetAllQuestions(ctx context.Context) ([]SurveyQuestion, error)
 	SaveQuestion(ctx context.Context, q *SurveyQuestion) error
 	SeedDefaultQuestions(ctx context.Context) error
-	UpdateQuestion(ctx context.Context, id uint, text string, qType string) error
+	UpdateQuestion(ctx context.Context, id uint, textRU string, textKK string, optionsRU string, optionsKK string) error
 	DeleteQuestion(ctx context.Context, id uint) error
 }
 
@@ -145,13 +145,14 @@ func (r *botRepositoryImpl) SeedDefaultQuestions(ctx context.Context) error {
 	return nil
 }
 
-func (r *botRepositoryImpl) UpdateQuestion(ctx context.Context, id uint, text string, qType string) error {
+func (r *botRepositoryImpl) UpdateQuestion(ctx context.Context, id uint, textRU string, textKK string, optionsRU string, optionsKK string) error {
 	return r.db.WithContext(ctx).Model(&SurveyQuestion{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"text_ru": text,
-			"text_kk": text,
-			"type":    qType,
+			"text_ru":    textRU,
+			"text_kk":    textKK,
+			"options_ru": datatypes.JSON(optionsRU),
+			"options_kk": datatypes.JSON(optionsKK),
 		}).Error
 }
 

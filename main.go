@@ -426,16 +426,18 @@ func UpdateQuestionHandler(repo repository.BotRepository) http.HandlerFunc {
 		}
 
 		var payload struct {
-			Text string `json:"text"`
-			Type string `json:"type"`
+			TextRU    string `json:"text_ru"`
+			TextKK    string `json:"text_kk"`
+			OptionsRU json.RawMessage `json:"options_ru"`
+			OptionsKK json.RawMessage `json:"options_kk"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Text == "" {
-			http.Error(w, `{"error":"Invalid payload: text is required"}`, http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.TextRU == "" || payload.TextKK == "" {
+			http.Error(w, `{"error":"Invalid payload: text_ru and text_kk are required"}`, http.StatusBadRequest)
 			return
 		}
 
 		// Вызываем метод интерфейса (убедись, что он добавлен в repository.go)
-		err = repo.UpdateQuestion(context.Background(), uint(id), payload.Text, payload.Type)
+		err = repo.UpdateQuestion(context.Background(), uint(id), payload.TextRU, payload.TextKK, string(payload.OptionsRU), string(payload.OptionsKK))
 		if err != nil {
 			log.Printf("[ERROR] Failed to update question %d: %v", id, err)
 			http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
