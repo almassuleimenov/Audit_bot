@@ -109,10 +109,10 @@ func main() {
 		log.Fatalf("[ERROR] Failed to connect to PostgreSQL: %v", err)
 	}
 
-	// err = db.AutoMigrate(&repository.AuditRecord{}, &repository.Appointment{}, &repository.SurveyQuestion{})
-	// if err != nil {
-	// 	log.Fatalf("[ERROR] Failed to migrate database: %v", err)
-	// }
+	err = db.AutoMigrate(&repository.AuditRecord{}, &repository.Appointment{}, &repository.SurveyQuestion{})
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to migrate database: %v", err)
+	}
 
 	repo := repository.NewBotRepository(db)
 
