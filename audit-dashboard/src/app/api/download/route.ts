@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 
 export async function GET() {
-  const backendUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/export`;
+  const backendUrl = `${process.env.NEXT_PUBLIC_API_URL || 'https://audit-bot-1-j1xj.onrender.com'}/api/export`;
   const apiKey = process.env.API_SECRET_KEY;
 
   try {

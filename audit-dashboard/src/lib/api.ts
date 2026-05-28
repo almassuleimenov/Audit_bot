@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://audit-bot-1-j1xj.onrender.com';
 const API_SECRET_KEY = process.env.API_SECRET_KEY;
 
 interface FetchOptions extends RequestInit {
