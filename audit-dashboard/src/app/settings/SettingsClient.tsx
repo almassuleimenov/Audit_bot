@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { toggleQuestionActive, createQuestion } from './actions';
+import { toggleQuestionActive, createQuestion, updateQuestion, deleteQuestion } from './actions';
 
 interface SurveyQuestion {
   id: number;
@@ -26,6 +26,14 @@ export default function SettingsClient({ initialQuestions }: SettingsClientProps
     text_kk: '',
     options_ru: '["Да", "Нет", "Затрудняюсь"]',
     options_kk: '["Иә", "Жоқ", "Қиналамын"]'
+  });
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editQ, setEditQ] = useState({
+    text_ru: '',
+    text_kk: '',
+    options_ru: '',
+    options_kk: ''
   });
 
   const toggleActive = async (q: SurveyQuestion) => {
@@ -90,6 +98,73 @@ export default function SettingsClient({ initialQuestions }: SettingsClientProps
       }
     } catch (e) {
       alert("Ошибка при создании вопроса");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEditClick = (q: SurveyQuestion) => {
+    setEditingId(q.id);
+    setEditQ({
+      text_ru: q.text_ru,
+      text_kk: q.text_kk,
+      options_ru: q.options_ru,
+      options_kk: q.options_kk
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditQ({ text_ru: '', text_kk: '', options_ru: '', options_kk: '' });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editQ.text_ru.trim() || !editQ.text_kk.trim()) {
+      alert("Пожалуйста, заполните текст вопроса на обоих языках.");
+      return;
+    }
+
+    try {
+      JSON.parse(editQ.options_ru);
+      JSON.parse(editQ.options_kk);
+    } catch (e) {
+      alert("Варианты ответов должны быть в формате JSON массива. Пример: [\"Да\", \"Нет\"]");
+      return;
+    }
+
+    if (editingId === null) return;
+
+    setIsLoading(true);
+    try {
+      const result = await updateQuestion(editingId, editQ);
+      if (result.success) {
+        setEditingId(null);
+        location.reload();
+      } else {
+        alert("Ошибка при обновлении вопроса");
+      }
+    } catch (e) {
+      alert("Ошибка при обновлении вопроса");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm("Вы уверены, что хотите удалить этот вопрос?")) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await deleteQuestion(id);
+      if (result.success) {
+        location.reload();
+      } else {
+        alert("Ошибка при удалении вопроса");
+      }
+    } catch (e) {
+      alert("Ошибка при удалении вопроса");
     } finally {
       setIsLoading(false);
     }
@@ -186,8 +261,67 @@ export default function SettingsClient({ initialQuestions }: SettingsClientProps
           ) : (
             questions.map((question) => (
               <div key={question.id} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
+                {editingId === question.id ? (
+                  <div className="flex flex-col gap-4">
+                    <h3 className="text-lg font-bold text-[#182442]">Редактирование вопроса</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Вопрос на русском</label>
+                        <input
+                          type="text"
+                          value={editQ.text_ru}
+                          onChange={(e) => setEditQ({ ...editQ, text_ru: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#296956]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Вопрос на казахском</label>
+                        <input
+                          type="text"
+                          value={editQ.text_kk}
+                          onChange={(e) => setEditQ({ ...editQ, text_kk: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#296956]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Варианты (русский, JSON)</label>
+                        <textarea
+                          value={editQ.options_ru}
+                          onChange={(e) => setEditQ({ ...editQ, options_ru: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#296956]"
+                          rows={3}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Варианты (казахский, JSON)</label>
+                        <textarea
+                          value={editQ.options_kk}
+                          onChange={(e) => setEditQ({ ...editQ, options_kk: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#296956]"
+                          rows={3}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-4">
+                      <button
+                        onClick={handleSaveEdit}
+                        disabled={isLoading}
+                        className="flex-1 px-4 py-2 bg-[#296956] text-white rounded-lg hover:bg-[#1f523e] disabled:opacity-50 transition-colors font-medium"
+                      >
+                        Сохранить
+                      </button>
+                      <button
+                        onClick={handleCancelEdit}
+                        disabled={isLoading}
+                        className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 transition-colors font-medium"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
                     <h3 className="font-medium text-[#182442] mb-1">
                       Q{question.order_num}: {question.text_ru}
                     </h3>
@@ -201,18 +335,37 @@ export default function SettingsClient({ initialQuestions }: SettingsClientProps
                       </span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => toggleActive(question)}
-                    disabled={isLoading}
-                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                      question.is_active
-                        ? 'bg-[#aff0d8] text-[#296956] hover:bg-[#90e8c2] disabled:opacity-50'
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-50'
-                    }`}
-                  >
-                    {question.is_active ? 'Активен' : 'Неактивен'}
-                  </button>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={() => toggleActive(question)}
+                      disabled={isLoading}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        question.is_active
+                          ? 'bg-[#aff0d8] text-[#296956] hover:bg-[#90e8c2] disabled:opacity-50'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-50'
+                      }`}
+                    >
+                      {question.is_active ? 'Активен' : 'Неактивен'}
+                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleEditClick(question)}
+                        disabled={isLoading}
+                        className="flex-1 px-4 py-2 bg-blue-100 text-blue-700 rounded-lg font-medium hover:bg-blue-200 disabled:opacity-50 transition-colors"
+                      >
+                        Изменить
+                      </button>
+                      <button
+                        onClick={() => handleDelete(question.id)}
+                        disabled={isLoading}
+                        className="flex-1 px-4 py-2 bg-red-100 text-red-700 rounded-lg font-medium hover:bg-red-200 disabled:opacity-50 transition-colors"
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  </div>
                 </div>
+                )}
               </div>
             ))
           )}

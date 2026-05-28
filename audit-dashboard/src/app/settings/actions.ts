@@ -26,6 +26,30 @@ export async function toggleQuestionActive(question: SurveyQuestion) {
   }
 }
 
+export async function updateQuestion(id: number, payload: { text_ru: string; text_kk: string; options_ru: string; options_kk: string }) {
+  try {
+    await apiFetch(`/api/questions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Ошибка' };
+  }
+}
+
+export async function deleteQuestion(id: number) {
+  try {
+    await apiFetch(`/api/questions/${id}`, {
+      method: 'DELETE',
+    });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Ошибка' };
+  }
+}
+
 export async function createQuestion(payload: Omit<SurveyQuestion, 'id'> & { id: number }) {
   try {
     await apiFetch(`/api/questions`, {
