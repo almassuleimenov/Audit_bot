@@ -1,5 +1,5 @@
 import { apiFetch } from '@/lib/api';
-// src/app/appointments/page.tsx
+
 interface Appointment {
   ID: number;
   FullName: string;
@@ -14,7 +14,12 @@ export default async function AppointmentsPage() {
   let error: string | null = null;
 
   try {
-    appointments = await apiFetch<Appointment[]>('/api/appointments');
+    const data = await apiFetch<Appointment[]>('/api/appointments');
+    
+    // Защита от nil-слайса со стороны Go (когда БД пустая, возвращается null)
+    if (data && Array.isArray(data)) {
+      appointments = data;
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : 'Ошибка загрузки данных';
     console.error("Ошибка загрузки заявок:", err);

@@ -1,11 +1,10 @@
 import { apiFetch } from '@/lib/api';
 import AuditClient from './AuditClient';
 
-// Обновленный интерфейс! Добавили PhoneNumber
 interface AuditRecord {
   ID: number;
   TelegramID: number;
-  PhoneNumber: string; // <-- Вот этой строки не хватало
+  PhoneNumber: string;
   BIN: string;
   Position: string;
   Answers: string | Record<string, string>;
@@ -17,7 +16,7 @@ export default async function AuditPage() {
   let records: AuditRecord[] = [];
   
   try {
-    const data = await apiFetch('/api/audit-records', {
+    const data = await apiFetch<AuditRecord[]>('/api/audits', {
       next: { revalidate: 30 }
     });
     
