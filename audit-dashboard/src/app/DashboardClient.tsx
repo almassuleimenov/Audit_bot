@@ -22,7 +22,7 @@ export default function DashboardClient({ stats }: DashboardClientProps) {
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
-    const eventSource = new EventSource('https://audit-bot-bok1.onrender.com/api/stream/leads', {
+    const eventSource = new EventSource('/api/stream/leads', {
       withCredentials: true 
     });
 
