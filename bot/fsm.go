@@ -18,6 +18,7 @@ type State int
 
 const (
 	StateIdle State = iota
+	StateWaitingLanguage
 	StateWaitingPhone
 	StateWaitingBIN
 	StateWaitingPosition
@@ -83,7 +84,7 @@ func (h *BotHandler) getSession(chatID int64) *Session {
 			session = &Session{
 				ChatID:   chatID,
 				State:    StateIdle,
-				Language: "ru",
+				Language: "",
 				Answers:  make(map[string]string),
 			}
 			h.sessions[chatID] = session
@@ -92,13 +93,56 @@ func (h *BotHandler) getSession(chatID int64) *Session {
 	return session
 }
 
-func (h *BotHandler) sendMainMenu(chatID int64) {
-	text := "Вас приветствует Чат-бот Департамента внутреннего государственного аудита.\n\nВыберите действие:"
+func (h *BotHandler) sendLanguageSelection(chatID int64) {
+	text := "Пожалуйста, выберите язык / Тілді таңдаңыз:"
 	msg := tgbotapi.NewMessage(chatID, text)
 
-	btn := tgbotapi.NewKeyboardButton("/audit")
-	row := []tgbotapi.KeyboardButton{btn}
+	btnRU := tgbotapi.NewKeyboardButton("🇷🇺 Русский")
+	btnKK := tgbotapi.NewKeyboardButton("🇰🇿 Қазақша")
+	row := []tgbotapi.KeyboardButton{btnRU, btnKK}
 	keyboard := tgbotapi.NewReplyKeyboard(row)
+	keyboard.ResizeKeyboard = true
+	msg.ReplyMarkup = keyboard
+
+	h.bot.Send(msg)
+}
+
+func (h *BotHandler) sendMainMenu(chatID int64, lang string) {
+	if lang == "" {
+		h.sendLanguageSelection(chatID)
+		return
+	}
+
+	text := "Вас приветствует Чат-бот Департамента внутреннего государственного аудита.\n\nВыберите действие:"
+	if lang == "kk" {
+		text = "Ішкі мемлекеттік аудит департаментінің чат-ботына қош келдіңіз.\n\nӘрекетті таңдаңыз:"
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+
+	var keyboard tgbotapi.ReplyKeyboardMarkup
+	if lang == "kk" {
+		keyboard = tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("Онлайн-қабылдау бөлмесі"),
+				tgbotapi.NewKeyboardButton("Әдеп жөніндегі уәкіл"),
+			),
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("Баспасөз орталығы"),
+				tgbotapi.NewKeyboardButton("Сауалнама"),
+			),
+		)
+	} else {
+		keyboard = tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("Онлайн-приемная"),
+				tgbotapi.NewKeyboardButton("Уполномоченный по этике"),
+			),
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("Пресс-центр"),
+				tgbotapi.NewKeyboardButton("Анкетирование"),
+			),
+		)
+	}
 	keyboard.ResizeKeyboard = true
 	msg.ReplyMarkup = keyboard
 
@@ -132,17 +176,11 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		switch msg.Command() {
 		case "start":
 			session.Reset()
-			h.sendMainMenu(chatID)
+			session.State = StateWaitingLanguage
+			h.sendLanguageSelection(chatID)
 			return
 		case "audit":
-			session.Reset()
-			session.State = StateWaitingPhone
-			
-			// Запрос контакта (предотвращает фейковые номера)
-			reply := tgbotapi.NewMessage(chatID, "Для начала аудита необходимо подтвердить вашу личность. Пожалуйста, отправьте ваш номер телефона, нажав на кнопку ниже:")
-			btn := tgbotapi.NewKeyboardButtonContact("📱 Отправить контакт")
-			reply.ReplyMarkup = tgbotapi.NewReplyKeyboard([]tgbotapi.KeyboardButton{btn})
-			h.bot.Send(reply)
+			h.startAuditFlow(session, chatID)
 			return
 		}
 	}
@@ -153,13 +191,21 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 			session.PhoneNumber = msg.Contact.PhoneNumber
 			session.State = StateWaitingBIN
 
-			reply := tgbotapi.NewMessage(chatID, "Контакт успешно подтвержден. Теперь введите БИН вашей организации (12 цифр):")
+			textMsg := "Контакт успешно подтвержден. Теперь введите БИН вашей организации (12 цифр):"
+			if session.Language == "kk" {
+				textMsg = "Контакт сәтті расталды. Енді ұйымыңыздың БСН-ін (12 сан) енгізіңіз:"
+			}
+			reply := tgbotapi.NewMessage(chatID, textMsg)
 			reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 			h.bot.Send(reply)
 			return
 		}
 		
-		reply := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте кнопку '📱 Отправить контакт' для продолжения.")
+		textMsg := "Пожалуйста, используйте кнопку '📱 Отправить контакт' для продолжения."
+		if session.Language == "kk" {
+			textMsg = "Жалғастыру үшін '📱 Контакт жіберу' түймесін пайдаланыңыз."
+		}
+		reply := tgbotapi.NewMessage(chatID, textMsg)
 		h.bot.Send(reply)
 		return
 	}
@@ -170,17 +216,67 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	if session.State == StateIdle {
+		switch text {
+		case "Анкетирование", "Сауалнама":
+			h.startAuditFlow(session, chatID)
+			return
+		case "Онлайн-приемная", "Онлайн-қабылдау бөлмесі":
+			reply := tgbotapi.NewMessage(chatID, "Онлайн-приемная. Пожалуйста, обратитесь по телефону +7 (XXX) XXX-XX-XX.")
+			if session.Language == "kk" {
+				reply.Text = "Онлайн-қабылдау бөлмесі. +7 (XXX) XXX-XX-XX телефонына хабарласыңыз."
+			}
+			h.bot.Send(reply)
+			return
+		case "Уполномоченный по этике", "Әдеп жөніндегі уәкіл":
+			reply := tgbotapi.NewMessage(chatID, "Уполномоченный по этике Департамента. Контактные данные: ...")
+			if session.Language == "kk" {
+				reply.Text = "Департаменттің Әдеп жөніндегі уәкілі. Байланыс мәліметтері: ..."
+			}
+			h.bot.Send(reply)
+			return
+		case "Пресс-центр", "Баспасөз орталығы":
+			reply := tgbotapi.NewMessage(chatID, "Новости Пресс-центра: https://www.gov.kz/memleket/entities/kvga/press")
+			if session.Language == "kk" {
+				reply.Text = "Баспасөз орталығының жаңалықтары: https://www.gov.kz/memleket/entities/kvga/press"
+			}
+			h.bot.Send(reply)
+			return
+		}
+	}
+
 	switch session.State {
+	case StateWaitingLanguage:
+		if text == "🇷🇺 Русский" {
+			session.Language = "ru"
+		} else if text == "🇰🇿 Қазақша" {
+			session.Language = "kk"
+		} else {
+			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите язык, используя кнопки ниже / Төмендегі түймелерді пайдаланып тілді таңдаңыз:")
+			h.bot.Send(reply)
+			return
+		}
+		session.State = StateIdle
+		h.sendMainMenu(chatID, session.Language)
+
 	case StateWaitingBIN:
 		if len(text) != 12 {
-			reply := tgbotapi.NewMessage(chatID, "БИН должен состоять ровно из 12 символов. Попробуйте снова:")
+			msgText := "БИН должен состоять ровно из 12 символов. Попробуйте снова:"
+			if session.Language == "kk" {
+				msgText = "БСН дәл 12 таңбадан тұруы керек. Қайта көріңіз:"
+			}
+			reply := tgbotapi.NewMessage(chatID, msgText)
 			h.bot.Send(reply)
 			return
 		}
 
 		session.BIN = text
 		session.State = StateWaitingPosition
-		reply := tgbotapi.NewMessage(chatID, "Отлично. Теперь укажите вашу должность:")
+		msgText := "Отлично. Теперь укажите вашу должность:"
+		if session.Language == "kk" {
+			msgText = "Өте жақсы. Енді лауазымыңызды көрсетіңіз:"
+		}
+		reply := tgbotapi.NewMessage(chatID, msgText)
 		h.bot.Send(reply)
 
 	case StateWaitingPosition:
@@ -193,10 +289,14 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		questions, err := h.repo.GetActiveQuestions(ctx)
 		if err != nil || len(questions) == 0 {
 			log.Printf("[ERROR] Failed to fetch active questions: %v", err)
-			reply := tgbotapi.NewMessage(chatID, "Произошла ошибка при загрузке вопросов или они отсутствуют. Попробуйте позже.")
+			msgText := "Произошла ошибка при загрузке вопросов или они отсутствуют. Попробуйте позже."
+			if session.Language == "kk" {
+				msgText = "Сұрақтарды жүктеу кезінде қате орын алды немесе олар жоқ. Кейінірек қайталап көріңіз."
+			}
+			reply := tgbotapi.NewMessage(chatID, msgText)
 			h.bot.Send(reply)
 			session.Reset()
-			h.sendMainMenu(chatID)
+			h.sendMainMenu(chatID, session.Language)
 			return
 		}
 
@@ -208,7 +308,11 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 
 	case StateSurveyDynamic:
 		currentQ := session.Questions[session.CurrentQIndex]
-		session.Answers[currentQ.TextRU] = text
+		if session.Language == "kk" {
+			session.Answers[currentQ.TextKK] = text
+		} else {
+			session.Answers[currentQ.TextRU] = text
+		}
 		session.CurrentQIndex++
 
 		if session.CurrentQIndex < len(session.Questions) {
@@ -216,7 +320,11 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		} else {
 			session.State = StateWaitingScore
 
-			reply := tgbotapi.NewMessage(chatID, "Анкета завершена. Оцените работу аудиторов по 5-балльной шкале (где 5 - отлично, 1 - очень плохо):")
+			msgText := "Анкета завершена. Оцените работу аудиторов по 5-балльной шкале (где 5 - отлично, 1 - очень плохо):"
+			if session.Language == "kk" {
+				msgText = "Сауалнама аяқталды. Аудиторлардың жұмысын 5 балдық жүйемен бағалаңыз (мұнда 5 - өте жақсы, 1 - өте нашар):"
+			}
+			reply := tgbotapi.NewMessage(chatID, msgText)
 			row := []tgbotapi.KeyboardButton{
 				tgbotapi.NewKeyboardButton("1"),
 				tgbotapi.NewKeyboardButton("2"),
@@ -233,7 +341,11 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 	case StateWaitingScore:
 		score, err := strconv.Atoi(text)
 		if err != nil || score < 1 || score > 5 {
-			reply := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите число от 1 до 5 на клавиатуре.")
+			msgText := "Пожалуйста, выберите число от 1 до 5 на клавиатуре."
+			if session.Language == "kk" {
+				msgText = "Пернетақтадан 1 мен 5 аралығындағы санды таңдаңыз."
+			}
+			reply := tgbotapi.NewMessage(chatID, msgText)
 			h.bot.Send(reply)
 			return
 		}
@@ -243,18 +355,25 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// ПРИМЕЧАНИЕ: Тебе нужно убедиться, что метод SaveAuditRecord в repository.go принимает параметр session.PhoneNumber
 		err = h.repo.SaveAuditRecord(ctx, chatID, session.PhoneNumber, session.BIN, session.Position, session.Answers, session.Score)
 		if err != nil {
 			log.Printf("[ERROR] Failed to save audit record: %v", err)
-			reply := tgbotapi.NewMessage(chatID, "Произошла системная ошибка при сохранении данных. Обратитесь в поддержку.")
+			msgText := "Произошла системная ошибка при сохранении данных. Обратитесь в поддержку."
+			if session.Language == "kk" {
+				msgText = "Деректерді сақтау кезінде жүйелік қате орын алды. Қолдау қызметіне хабарласыңыз."
+			}
+			reply := tgbotapi.NewMessage(chatID, msgText)
 			h.bot.Send(reply)
 			session.Reset()
-			h.sendMainMenu(chatID)
+			h.sendMainMenu(chatID, session.Language)
 			return
 		}
 
-		reply := tgbotapi.NewMessage(chatID, "Спасибо за уделенное время! Ваши ответы успешно сохранены и помогут нам улучшить качество работы.")
+		msgText := "Спасибо за уделенное время! Ваши ответы успешно сохранены и помогут нам улучшить качество работы."
+		if session.Language == "kk" {
+			msgText = "Уақыт бөлгеніңіз үшін рахмет! Жауаптарыңыз сәтті сақталды және жұмыс сапасын жақсартуға көмектеседі."
+		}
+		reply := tgbotapi.NewMessage(chatID, msgText)
 		reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 		h.bot.Send(reply)
 
@@ -266,23 +385,55 @@ func (h *BotHandler) handleMessage(msg *tgbotapi.Message) {
 		}
 
 		session.Reset()
-		h.sendMainMenu(chatID)
+		h.sendMainMenu(chatID, session.Language)
 
 	default:
 		session.Reset()
-		h.sendMainMenu(chatID)
+		h.sendMainMenu(chatID, session.Language)
 	}
+}
+
+func (h *BotHandler) startAuditFlow(session *Session, chatID int64) {
+	if session.Language == "" {
+		session.State = StateWaitingLanguage
+		h.sendLanguageSelection(chatID)
+		return
+	}
+	session.Reset()
+	session.State = StateWaitingPhone
+
+	textMsg := "Для начала аудита необходимо подтвердить вашу личность. Пожалуйста, отправьте ваш номер телефона, нажав на кнопку ниже:"
+	btnText := "📱 Отправить контакт"
+	if session.Language == "kk" {
+		textMsg = "Аудитті бастау үшін жеке басыңызды растау қажет. Төмендегі түймені басу арқылы телефон нөміріңізді жіберіңіз:"
+		btnText = "📱 Контакт жіберу"
+	}
+
+	reply := tgbotapi.NewMessage(chatID, textMsg)
+	btn := tgbotapi.NewKeyboardButtonContact(btnText)
+	reply.ReplyMarkup = tgbotapi.NewReplyKeyboard([]tgbotapi.KeyboardButton{btn})
+	h.bot.Send(reply)
 }
 
 func (h *BotHandler) askCurrentQuestion(session *Session) {
 	q := session.Questions[session.CurrentQIndex]
-	qText := fmt.Sprintf("%d. %s", session.CurrentQIndex+1, q.TextRU)
+	qText := ""
 	var options []string
 
-	err := json.Unmarshal(q.OptionsRU, &options)
-	if err != nil {
-		log.Printf("[WARNING] Не удалось распарсить варианты ответов для вопроса ID %d", q.ID)
-		options = []string{"Да", "Нет"}
+	if session.Language == "kk" {
+		qText = fmt.Sprintf("%d. %s", session.CurrentQIndex+1, q.TextKK)
+		err := json.Unmarshal(q.OptionsKK, &options)
+		if err != nil {
+			log.Printf("[WARNING] Не удалось распарсить варианты ответов KK для вопроса ID %d", q.ID)
+			options = []string{"Иә", "Жоқ", "Қиналамын"}
+		}
+	} else {
+		qText = fmt.Sprintf("%d. %s", session.CurrentQIndex+1, q.TextRU)
+		err := json.Unmarshal(q.OptionsRU, &options)
+		if err != nil {
+			log.Printf("[WARNING] Не удалось распарсить варианты ответов RU для вопроса ID %d", q.ID)
+			options = []string{"Да", "Нет", "Затрудняюсь"}
+		}
 	}
 
 	msg := tgbotapi.NewMessage(session.ChatID, qText)
