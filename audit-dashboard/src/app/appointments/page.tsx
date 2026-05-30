@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { apiFetch } from '@/lib/api';
 
 interface Appointment {
