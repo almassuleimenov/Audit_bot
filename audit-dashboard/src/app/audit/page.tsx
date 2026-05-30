@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { apiFetch } from '@/lib/api';
 import AuditClient from './AuditClient';
 
